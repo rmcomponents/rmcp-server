@@ -31,7 +31,15 @@ def _make_table(n=10):
 
 @pytest.mark.asyncio
 async def test_store_and_load(fake_redis):
-    store = ResultSetStore(fake_redis, **settings_for_tests.model_dump())
+    store = ResultSetStore(
+        fake_redis,
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
+        chunk_rows=settings_for_tests.RESULTSET_CHUNK_ROWS,
+        idle_ttl=settings_for_tests.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings_for_tests.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings_for_tests.RESULTSET_MAX_ROWS,
+        max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
+    )
 
     table = _make_table(50)
     summary = await store.store_result(
@@ -53,7 +61,15 @@ async def test_store_and_load(fake_redis):
 
 @pytest.mark.asyncio
 async def test_store_result_exceeds_max_rows(fake_redis):
-    store = ResultSetStore(fake_redis, **settings_for_tests.model_dump())
+    store = ResultSetStore(
+        fake_redis,
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
+        chunk_rows=settings_for_tests.RESULTSET_CHUNK_ROWS,
+        idle_ttl=settings_for_tests.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings_for_tests.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings_for_tests.RESULTSET_MAX_ROWS,
+        max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
+    )
 
     big_table = _make_table(1500)  # > 1000
     with pytest.raises(ToolError) as exc:
@@ -63,7 +79,15 @@ async def test_store_result_exceeds_max_rows(fake_redis):
 
 @pytest.mark.asyncio
 async def test_ownership_enforced(fake_redis):
-    store = ResultSetStore(fake_redis, **settings_for_tests.model_dump())
+    store = ResultSetStore(
+        fake_redis,
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
+        chunk_rows=settings_for_tests.RESULTSET_CHUNK_ROWS,
+        idle_ttl=settings_for_tests.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings_for_tests.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings_for_tests.RESULTSET_MAX_ROWS,
+        max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
+    )
 
     table = _make_table(10)
     summary = await store.store_result("sess1", "test", None, table)
@@ -88,7 +112,15 @@ async def test_ownership_enforced(fake_redis):
 
 @pytest.mark.asyncio
 async def test_list_results(fake_redis):
-    store = ResultSetStore(fake_redis, **settings_for_tests.model_dump())
+    store = ResultSetStore(
+        fake_redis,
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
+        chunk_rows=settings_for_tests.RESULTSET_CHUNK_ROWS,
+        idle_ttl=settings_for_tests.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings_for_tests.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings_for_tests.RESULTSET_MAX_ROWS,
+        max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
+    )
 
     await store.store_result("sess1", "src1", None, _make_table(5))
     await store.store_result("sess1", "src2", None, _make_table(10))
@@ -108,8 +140,12 @@ async def test_list_results(fake_redis):
 async def test_load_range(fake_redis):
     store = ResultSetStore(
         fake_redis,
-        **settings_for_tests.model_dump(),
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
         chunk_rows=10,  # small chunks for testing
+        idle_ttl=settings_for_tests.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings_for_tests.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings_for_tests.RESULTSET_MAX_ROWS,
+        max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
     )
 
     table = _make_table(35)  # will be split into 4 chunks (10,10,10,5)
