@@ -54,6 +54,17 @@ def _build_filter_expr(filter_group: FilterGroup, schema: Dict[str, pl.DataType]
     if not filter_group.clauses:
         return pl.lit(True)
 
+    # NEW: enforce max clauses
+    if len(filter_group.clauses) > settings.TOOL_MAX_FILTER_CLAUSES:
+        raise tool_error(
+            "INVALID_ARGUMENT",
+            f"Too many filter clauses (max {settings.TOOL_MAX_FILTER_CLAUSES})",
+        )
+
+    # NEW: validate combine value
+    if filter_group.combine not in ("all", "any"):
+        raise tool_error("INVALID_ARGUMENT", "FilterGroup.combine must be 'all' or 'any'")
+
     expressions = []
     for clause in filter_group.clauses:
         expr = _build_single_filter(clause, schema)
@@ -73,7 +84,8 @@ def _build_filter_expr(filter_group: FilterGroup, schema: Dict[str, pl.DataType]
 def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -> pl.Expr:
     col = clause.column
     if col not in schema:
-        raise tool_error("UNKNOWN_COLUMN", f"Column '{col}' does not exist.")
+        raise tool_error("UNKNOWN_COLUMN", f"Column '{col}' does not exist.",
+                         {"available_columns": list(schema.keys())})
     dtype = schema[col]
     op = clause.operator.lower()
     value = clause.value
@@ -135,14 +147,19 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
     elif op == "in":
         if not isinstance(value, list):
             raise tool_error("INVALID_ARGUMENT", "Operator 'in' requires a list of values.")
-        if len(value) > settings.TOOL_MAX_FILTER_CLAUSES:
-            raise tool_error("INVALID_ARGUMENT", f"Too many values in 'in' (max {settings.TOOL_MAX_FILTER_CLAUSES})")
+        # NEW: separate limit for in/not_in values
+        MAX_IN_VALUES = 100
+        if len(value) > MAX_IN_VALUES:
+            raise tool_error("INVALID_ARGUMENT",
+                             f"Too many values in 'in' (max {MAX_IN_VALUES})")
         return col_expr.is_in(value)
     elif op == "not_in":
         if not isinstance(value, list):
             raise tool_error("INVALID_ARGUMENT", "Operator 'not_in' requires a list of values.")
-        if len(value) > settings.TOOL_MAX_FILTER_CLAUSES:
-            raise tool_error("INVALID_ARGUMENT", f"Too many values in 'not_in'")
+        MAX_IN_VALUES = 100
+        if len(value) > MAX_IN_VALUES:
+            raise tool_error("INVALID_ARGUMENT",
+                             f"Too many values in 'not_in' (max {MAX_IN_VALUES})")
         return ~col_expr.is_in(value)
     elif op == "between":
         if not isinstance(value, list) or len(value) != 2:
@@ -214,7 +231,8 @@ def _apply_sort(df: pl.DataFrame, sort_specs: List[SortSpec]) -> pl.DataFrame:
     nulls_last = []
     for spec in sort_specs:
         if spec.column not in df.columns:
-            raise tool_error("UNKNOWN_COLUMN", f"Column '{spec.column}' does not exist.")
+            raise tool_error("UNKNOWN_COLUMN", f"Column '{spec.column}' does not exist.",
+                             {"available_columns": list(df.columns)})
         by.append(spec.column)
         descending.append(spec.direction.lower() == "desc")
         nulls_last.append(spec.nulls.lower() == "last")
@@ -286,7 +304,8 @@ class QueryEngine:
         if columns:
             for c in columns:
                 if c not in df.columns:
-                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.")
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.",
+                                     {"available_columns": list(df.columns)})
             df = df.select(columns)
         return df
 
@@ -300,7 +319,8 @@ class QueryEngine:
         if columns:
             for c in columns:
                 if c not in df.columns:
-                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.")
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.",
+                                     {"available_columns": list(df.columns)})
             df = df.select(columns)
         return df
 
@@ -349,7 +369,8 @@ class QueryEngine:
             # validate
             for c in columns:
                 if c not in all_columns:
-                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.")
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.",
+                                     {"available_columns": list(all_columns.keys())})
 
         result = []
         need_distinct_examples = include_examples
@@ -762,8 +783,9 @@ class QueryEngine:
         # We'll compute counts manually using cut
         cut_expr = pl.col(column).cut(bin_edges, include_breaks=True).alias("bin")
         binned = non_null.with_columns(cut_expr)
-        # Count per bin
-        counts = binned.group_by("bin").agg(pl.count().alias("count")).sort("bin")
+        # NEW: extract breakpoint for numeric sort
+        binned = binned.with_columns(pl.col("bin").struct.field("breakpoint").alias("breakpoint_val"))
+        counts = binned.group_by("bin", "breakpoint_val").agg(pl.count().alias("count")).sort("breakpoint_val")
         histogram = []
         for row in counts.iter_rows(named=True):
             bin_info = row["bin"]

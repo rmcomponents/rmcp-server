@@ -153,6 +153,7 @@ class ResultSetStore:
         chunk_index = 0
         total_rows = 0
         total_stored = 0
+        total_uncompressed = 0          # NEW accumulator
         schema = None
         stats_accum = _IncrementalStats()
 
@@ -162,13 +163,25 @@ class ResultSetStore:
                 schema = batch.schema
             total_rows += batch.num_rows
             if total_rows > self.max_rows:
-                # Clean up already written chunks
-                for idx in range(chunk_index):
-                    pipe.delete(self._chunk_key(result_id, idx))
-                await pipe.execute()
+                # Clean up already written chunks using a fresh pipeline
+                chunk_keys = [self._chunk_key(result_id, idx) for idx in range(chunk_index)]
+                if chunk_keys:
+                    await self.redis.delete(*chunk_keys)
                 raise tool_error(
                     "RESULT_SET_TOO_LARGE",
                     f"Row count exceeded {self.max_rows}",
+                )
+
+            # NEW: track uncompressed size
+            batch_bytes = batch.nbytes
+            total_uncompressed += batch_bytes
+            if total_uncompressed > self.max_bytes:
+                chunk_keys = [self._chunk_key(result_id, idx) for idx in range(chunk_index)]
+                if chunk_keys:
+                    await self.redis.delete(*chunk_keys)
+                raise tool_error(
+                    "RESULT_SET_TOO_LARGE",
+                    f"Uncompressed size {total_uncompressed} exceeds limit {self.max_bytes}",
                 )
 
             stats_accum.update(batch)
@@ -196,7 +209,7 @@ class ResultSetStore:
             absolute_expires_at=absolute_expires_at,
             row_count=total_rows,
             column_count=len(schema),
-            uncompressed_size_bytes=0,  # not tracked in stream
+            uncompressed_size_bytes=total_uncompressed,   # now set correctly
             stored_size_bytes=total_stored,
             chunk_count=chunk_index,
             columns=columns_info,
