@@ -472,6 +472,318 @@ class QueryEngine:
             count = meta.row_count
         return {"result_id": result_id, "count": count}
 
-    # Additional tools (to be implemented later in this phase)
-    # query_rows, distinct_values, aggregate, group_by, histogram, delete_result_set
-    # will follow in a subsequent commit.
+    # ---------- New tools (Phase 6) ----------
+
+    async def query_rows(
+        self,
+        result_id: str,
+        filters: Optional[FilterGroup] = None,
+        columns: Optional[List[str]] = None,
+        sort: Optional[List[SortSpec]] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit = min(limit, self.settings.TOOL_MAX_ROWS)
+        meta = await self._ensure_owned(result_id)
+        df = await self._load_full_df(result_id, columns=columns)
+        schema = {name: df[name].dtype for name in df.columns}
+        if filters and filters.clauses:
+            mask = _build_filter_expr(filters, schema)
+            df = df.filter(mask)
+        total_rows = df.height
+        if sort:
+            df = _apply_sort(df, sort)
+        df_slice = df.slice(offset, limit)
+        rows = _df_to_rows(df_slice)
+        has_more = offset + limit < total_rows
+        next_offset = offset + limit if has_more else None
+        return {
+            "result_id": result_id,
+            "offset": offset,
+            "limit": limit,
+            "returned": len(rows),
+            "total_rows": total_rows,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "rows": rows,
+        }
+
+    async def distinct_values(
+        self,
+        result_id: str,
+        column: str,
+        filters: Optional[FilterGroup] = None,
+        limit: int = 50,
+        offset: int = 0,
+        include_counts: bool = True,
+        order: str = "count_desc",
+        include_null: bool = False,
+    ) -> Dict[str, Any]:
+        limit = min(limit, self.settings.TOOL_MAX_DISTINCT_VALUES)
+        meta = await self._ensure_owned(result_id)
+        df = await self._load_full_df(result_id, columns=[column])
+        schema = {name: df[name].dtype for name in df.columns}
+        if filters and filters.clauses:
+            mask = _build_filter_expr(filters, schema)
+            df = df.filter(mask)
+        # Compute value counts
+        if include_null:
+            # Polars group_by includes nulls by default
+            value_counts = df.group_by(column).agg(pl.count().alias("count"))
+        else:
+            value_counts = df.drop_nulls().group_by(column).agg(pl.count().alias("count"))
+        # Order
+        if order == "count_desc":
+            value_counts = value_counts.sort("count", descending=True)
+        elif order == "count_asc":
+            value_counts = value_counts.sort("count", descending=False)
+        elif order == "value_asc":
+            value_counts = value_counts.sort(column, descending=False)
+        elif order == "value_desc":
+            value_counts = value_counts.sort(column, descending=True)
+        else:
+            raise tool_error("INVALID_ARGUMENT", f"Unsupported order '{order}'.")
+        total_distinct = value_counts.height
+        value_counts_slice = value_counts.slice(offset, limit)
+        values = []
+        for row in value_counts_slice.iter_rows(named=True):
+            entry = {"value": _normalize_value(row[column])}
+            if include_counts:
+                entry["count"] = row["count"]
+            values.append(entry)
+        has_more = offset + limit < total_distinct
+        next_offset = offset + limit if has_more else None
+        return {
+            "result_id": result_id,
+            "column": column,
+            "returned": len(values),
+            "total_distinct": total_distinct,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "values": values,
+        }
+
+    async def aggregate(
+        self,
+        result_id: str,
+        aggregations: List[AggregationSpec],
+        filters: Optional[FilterGroup] = None,
+    ) -> Dict[str, Any]:
+        meta = await self._ensure_owned(result_id)
+        # Determine needed columns
+        needed_cols = set()
+        for agg in aggregations:
+            if agg.column:
+                needed_cols.add(agg.column)
+        df = await self._load_full_df(result_id, columns=list(needed_cols) if needed_cols else None)
+        schema = {name: df[name].dtype for name in df.columns}
+        if filters and filters.clauses:
+            mask = _build_filter_expr(filters, schema)
+            df = df.filter(mask)
+        # Build aggregation expressions
+        agg_exprs = []
+        for agg in aggregations:
+            op = agg.operation.lower()
+            alias = agg.alias
+            col = agg.column
+            if op == "count":
+                if col:
+                    raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
+                agg_exprs.append(pl.count().alias(alias))
+            elif op == "count_non_null":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
+                agg_exprs.append(pl.col(col).count().alias(alias))
+            elif op == "count_distinct":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "count_distinct requires a column.")
+                agg_exprs.append(pl.col(col).n_unique().alias(alias))
+            elif op == "sum":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "sum requires a column.")
+                agg_exprs.append(pl.col(col).sum().alias(alias))
+            elif op == "avg":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "avg requires a column.")
+                agg_exprs.append(pl.col(col).mean().alias(alias))
+            elif op == "min":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "min requires a column.")
+                agg_exprs.append(pl.col(col).min().alias(alias))
+            elif op == "max":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "max requires a column.")
+                agg_exprs.append(pl.col(col).max().alias(alias))
+            else:
+                raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.")
+        if not agg_exprs:
+            raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
+        result_df = df.select(agg_exprs)
+        row = result_df.to_dicts()[0]
+        normalized = {k: _normalize_value(v) for k, v in row.items()}
+        return {"result_id": result_id, "aggregations": normalized}
+
+    async def group_by(
+        self,
+        result_id: str,
+        group_columns: List[str],
+        aggregations: List[AggregationSpec],
+        filters: Optional[FilterGroup] = None,
+        sort: Optional[List[SortSpec]] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        limit = min(limit, self.settings.TOOL_MAX_ROWS)
+        if len(group_columns) > self.settings.TOOL_MAX_GROUP_COLUMNS:
+            raise tool_error("INVALID_ARGUMENT", f"Too many group columns (max {self.settings.TOOL_MAX_GROUP_COLUMNS}).")
+        meta = await self._ensure_owned(result_id)
+        # Determine needed columns
+        needed_cols = set(group_columns)
+        for agg in aggregations:
+            if agg.column:
+                needed_cols.add(agg.column)
+        df = await self._load_full_df(result_id, columns=list(needed_cols))
+        schema = {name: df[name].dtype for name in df.columns}
+        if filters and filters.clauses:
+            mask = _build_filter_expr(filters, schema)
+            df = df.filter(mask)
+        # Build aggregation expressions
+        agg_exprs = []
+        for agg in aggregations:
+            op = agg.operation.lower()
+            alias = agg.alias
+            col = agg.column
+            if op == "count":
+                if col:
+                    raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
+                agg_exprs.append(pl.count().alias(alias))
+            elif op == "count_non_null":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
+                agg_exprs.append(pl.col(col).count().alias(alias))
+            elif op == "count_distinct":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "count_distinct requires a column.")
+                agg_exprs.append(pl.col(col).n_unique().alias(alias))
+            elif op == "sum":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "sum requires a column.")
+                agg_exprs.append(pl.col(col).sum().alias(alias))
+            elif op == "avg":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "avg requires a column.")
+                agg_exprs.append(pl.col(col).mean().alias(alias))
+            elif op == "min":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "min requires a column.")
+                agg_exprs.append(pl.col(col).min().alias(alias))
+            elif op == "max":
+                if not col:
+                    raise tool_error("INVALID_AGGREGATION", "max requires a column.")
+                agg_exprs.append(pl.col(col).max().alias(alias))
+            else:
+                raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.")
+        if not agg_exprs:
+            raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
+        # Group by
+        grouped = df.group_by(group_columns).agg(agg_exprs)
+        # Enforce max groups
+        if grouped.height > self.settings.RESULTSET_MAX_GROUPS:
+            raise tool_error(
+                "TOO_MANY_GROUPS",
+                f"Group cardinality {grouped.height} exceeds limit {self.settings.RESULTSET_MAX_GROUPS}."
+            )
+        total_groups = grouped.height
+        if sort:
+            grouped = _apply_sort(grouped, sort)
+        grouped_slice = grouped.slice(offset, limit)
+        rows = _df_to_rows(grouped_slice)
+        has_more = offset + limit < total_groups
+        next_offset = offset + limit if has_more else None
+        return {
+            "result_id": result_id,
+            "group_columns": group_columns,
+            "offset": offset,
+            "limit": limit,
+            "returned": len(rows),
+            "total_groups": total_groups,
+            "has_more": has_more,
+            "next_offset": next_offset,
+            "rows": rows,
+        }
+
+    async def histogram(
+        self,
+        result_id: str,
+        column: str,
+        bins: int = 10,
+        filters: Optional[FilterGroup] = None,
+    ) -> Dict[str, Any]:
+        bins = min(bins, 50)
+        meta = await self._ensure_owned(result_id)
+        df = await self._load_full_df(result_id, columns=[column])
+        schema = {name: df[name].dtype for name in df.columns}
+        if filters and filters.clauses:
+            mask = _build_filter_expr(filters, schema)
+            df = df.filter(mask)
+        # Drop nulls for binning
+        non_null = df.drop_nulls()
+        null_count = df.height - non_null.height
+        if non_null.height == 0:
+            return {
+                "result_id": result_id,
+                "column": column,
+                "bins": 0,
+                "null_count": null_count,
+                "histogram": [],
+            }
+        # Determine min and max
+        col_min = non_null[column].min()
+        col_max = non_null[column].max()
+        if col_min is None or col_max is None:
+            return {
+                "result_id": result_id,
+                "column": column,
+                "bins": 0,
+                "null_count": null_count,
+                "histogram": [],
+            }
+        # Create bin boundaries
+        if col_min == col_max:
+            # Single value
+            bin_edges = [col_min, col_max]
+        else:
+            bin_edges = []
+            step = (col_max - col_min) / bins
+            for i in range(bins + 1):
+                bin_edges.append(col_min + i * step)
+        # Cut into bins
+        # Polars cut returns a struct with breakpoint and category
+        # We'll compute counts manually using cut
+        cut_expr = pl.col(column).cut(bin_edges, include_breaks=True).alias("bin")
+        binned = non_null.with_columns(cut_expr)
+        # Count per bin
+        counts = binned.group_by("bin").agg(pl.count().alias("count")).sort("bin")
+        histogram = []
+        for row in counts.iter_rows(named=True):
+            bin_info = row["bin"]
+            # bin_info is a struct with fields: breakpoint, category
+            # We'll extract breakpoint as upper bound
+            breakpoint = bin_info["breakpoint"]
+            count = row["count"]
+            histogram.append({
+                "upper_bound": _normalize_value(breakpoint),
+                "count": count,
+            })
+        return {
+            "result_id": result_id,
+            "column": column,
+            "bins": len(histogram),
+            "null_count": null_count,
+            "histogram": histogram,
+        }
+
+    async def delete_result_set(self, result_id: str) -> Dict[str, Any]:
+        meta = await self._ensure_owned(result_id)
+        deleted = await self.store.delete_result(self.session_id, result_id)
+        return {"result_id": result_id, "deleted": deleted}

@@ -1,0 +1,22 @@
+Phase 6: Remaining Generic Tools - Completed
+
+Achievements:
+- Added six new methods to QueryEngine:
+  - query_rows: filtered, sorted, projected row retrieval.
+  - distinct_values: distinct value enumeration with counts and ordering.
+  - aggregate: single-row aggregations (count, sum, avg, min, max, etc.).
+  - group_by: grouped aggregations with cardinality enforcement.
+  - histogram: binning for numeric/date columns.
+  - delete_result_set: idempotent deletion of owned result sets.
+- Added corresponding MCP tool functions in result_sets.py:
+  - query_rows, distinct_values, aggregate, group_by, histogram, delete_result_set.
+- All tools follow the same error handling pattern (ToolError -> to_dict, generic catch -> INTERNAL_ERROR).
+- Tools enforce session ownership, column validation, and configured limits.
+
+Next steps (Phase 5: Hardening):
+- Apply memory guards and working-memory limits to the new tools.
+- Add structured logging with request IDs and durations.
+- Write unit tests for query engine and tools.
+- Write integration tests for result store.
+- Write MCP-level tests for session isolation.
+- Update documentation and README.
