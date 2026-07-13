@@ -1,10 +1,13 @@
 import logging
 from contextlib import asynccontextmanager
 from fastmcp import FastMCP
+from py_key_value_aio.redis import RedisStore
 from redis.asyncio import Redis
 from .config import settings
 
 logger = logging.getLogger(__name__)
+
+store = RedisStore(url=settings.REDIS_URL)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -19,7 +22,7 @@ async def lifespan(app):
     await app.state.redis.close()
     logger.info("Redis connection closed")
 
-mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan)
+mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan, session_state_store=store)
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
