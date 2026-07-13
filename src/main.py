@@ -44,22 +44,27 @@ def build_connection() -> pyodbc.Connection:
     return conn
 
 
-mcp = FastMCP("SQLServerMCP")
+mcp = FastMCP("AlphaPlanMCP")
 
 
 @mcp.tool()
-def list_customers(customer_name: Optional[str] = None,) -> str:
+def list_customers(customer_name: Optional[str] = None, limit: Optional[int] = 1000, offset: Optional[int] = 0) -> list[dict]:
     """
     Search for customers in the database.
-    Provide either a customer_name (supports SQL LIKE wildcards, e.g., 'Acme%') 
-    or an exact customer_number.
+    Provide a customer_name (supports SQL LIKE wildcards, e.g., 'Acme%') to filter.
+    Use limit and offset for large queries. Default limit is 1000 (highest possible value).
+
+    If no name is provided, returns all non-archived customers.
     """
+    if not customer_name:
+        customer_name = "%"
+
+    # cap 
+    limit = min(1000, limit)
 
     conn = build_connection()
     cursor = conn.cursor()
 
-    if not customer_name:
-        customer_name="%" # TODO ugly
     try:
         query = """
             SELECT
@@ -76,30 +81,27 @@ def list_customers(customer_name: Optional[str] = None,) -> str:
                 K_VKAD AS sachbearbeiter_aussendienst,
                 K_AB AS sachbearbeiter_auftragsbearbeitung
             FROM
-                dbo.Adressen
+                ALPHAPLAN_EchtDaten.dbo.Adressen
             WHERE
                 IstArchiviert = 0
                 AND AdressenID > 0
+                AND SuchName LIKE ?
             ORDER BY AdressNummer
+            OFFSET ? ROWS
+            FETCH NEXT ? ROWS ONLY;
         """
-        cursor.execute(query, customer_name)
+        cursor.execute(query, customer_name, offset, limit)
 
+        columns = [column[0] for column in cursor.description]
         rows = cursor.fetchall()
-    
-        if not rows:
-            return "No customers found matching the criteria."
 
-        results = []
-        for row in rows:
-            results.append(f"ID: {row.CustomerID}, Name: {row.Name}")
-        
-        return "\n".join(results)
+        return [dict(zip(columns, row)) for row in rows]
     finally:
         conn.close()
 
 
 def main():
-    mcp.run()
+    mcp.run(transport="http", port=9000)
 
 
 if __name__ == "__main__":
