@@ -320,6 +320,38 @@ class ResultSetStore:
                 await self.redis.srem(session_key, rid_str)
         return metas
 
+    # ---------- cleanup ----------
+    async def _cleanup_orphans(self) -> int:
+        """Scan Redis for result‑related keys and remove orphan chunks/session entries."""
+        cursor = 0
+        cleaned = 0
+        pattern = f"{self.prefix}:result:*"
+        while True:
+            cursor, keys = await self.redis.scan(cursor=cursor, match=pattern, count=100)
+            for key in keys:
+                key_str = key.decode() if isinstance(key, bytes) else key
+                parts = key_str.split(":")
+                if len(parts) < 4:
+                    continue
+                result_id = parts[2]
+                # If metadata does not exist, delete this key (could be orphan chunk)
+                meta_key = self._meta_key(result_id)
+                if not await self.redis.exists(meta_key):
+                    await self.redis.delete(key)
+                    cleaned += 1
+            if cursor == 0:
+                break
+        return cleaned
+
+    async def run_cleanup(self):
+        """Entry point for periodic background cleanup."""
+        try:
+            orphan_count = await self._cleanup_orphans()
+            if orphan_count:
+                logger.info("Cleanup removed %d orphan keys", orphan_count)
+        except Exception as e:
+            logger.warning("Cleanup encountered an error: %s", e)
+
     # ---------- internal helpers ----------
     def _compute_column_stats(self, table: pa.Table) -> List[ColumnInfo]:
         import pyarrow.compute as pc

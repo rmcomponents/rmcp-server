@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastmcp import FastMCP
@@ -11,10 +12,20 @@ logger = logging.getLogger(__name__)
 
 store = RedisStore(url=settings.REDIS_URL)
 
+async def cleanup_loop(app, interval_seconds=300):
+    while True:
+        try:
+            await app.state.result_store.run_cleanup()
+        except Exception as e:
+            logger.warning("Cleanup task failed: %s", e)
+        await asyncio.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def lifespan(app):
     app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=False)
     app.state.result_store = ResultSetStore(app.state.redis, settings)
+    cleanup_task = asyncio.create_task(cleanup_loop(app))
     try:
         await app.state.redis.ping()
         logger.info("Connected to Redis")
@@ -22,6 +33,11 @@ async def lifespan(app):
         logger.error(f"Failed to connect to Redis: {e}")
         raise
     yield
+    cleanup_task.cancel()
+    try:
+        await cleanup_task
+    except asyncio.CancelledError:
+        pass
     await app.state.redis.close()
     logger.info("Redis connection closed")
 

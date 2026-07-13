@@ -272,12 +272,18 @@ class QueryEngine:
         return meta
 
     async def _load_full_df(self, result_id: str, columns: Optional[List[str]] = None) -> pl.DataFrame:
-        table = await self.store.load_table(result_id)  # may be None if expired
+        meta = await self._ensure_owned(result_id)
+        # Safety: refuse to load huge result sets entirely into memory
+        if meta.uncompressed_size_bytes > self.settings.RESULTSET_MAX_BYTES:
+            raise tool_error(
+                "OPERATION_TOO_LARGE",
+                "Result set is too large to load entirely into memory for this operation."
+            )
+        table = await self.store.load_table(result_id)
         if table is None:
             raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
         df = pl.from_arrow(table)
         if columns:
-            # validate
             for c in columns:
                 if c not in df.columns:
                     raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.")

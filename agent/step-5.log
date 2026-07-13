@@ -1,0 +1,15 @@
+Phase 5: Hardening – Partially Completed
+
+Achievements:
+- Created ToolError exception class for structured error responses.
+- Updated result_store and query_engine to raise ToolError (no more bare dicts).
+- Wrapped all exposed tools (get_result_info, list_result_sets, explain_columns, list_rows, count_rows) with blanket exception handling that returns proper INTERNAL_ERROR.
+- Added memory guard in query_engine._load_full_df to reject oversized result sets with OPERATION_TOO_LARGE.
+- Introduced background orphan‑chunk scanner in ResultSetStore and a periodic cleanup task in the server lifespan.
+- Provided error‑wrapping helpers (wrap_redis_error, wrap_db_error) for future use.
+
+Remaining work (still needed):
+- Implement the remaining generic tools (query_rows, distinct_values, aggregate, group_by, histogram, delete_result_set) with the same hardening patterns.
+- Write unit and integration tests for error handling, TTL expiry, and cleanup.
+- Complete the README documentation.
+- Perform Docker restart and end‑to‑end acceptance tests.
