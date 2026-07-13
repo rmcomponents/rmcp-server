@@ -4,7 +4,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Dict, List, Optional, Tuple
+from typing import AsyncGenerator, Dict, List, Optional, Tuple
 
 import pyarrow as pa
 from redis.asyncio import Redis
@@ -135,6 +135,104 @@ class ResultSetStore:
                      for c in columns_info],
         )
 
+    async def store_result_stream(
+        self,
+        session_id: str,
+        source: str,
+        source_parameters: Optional[dict],
+        batches: AsyncGenerator[pa.RecordBatch, None],
+    ) -> ResultSetSummary:
+        """Ingest a stream of Arrow record batches, writing chunks incrementally."""
+        result_id = f"rs_{uuid.uuid4()}"
+        now = datetime.now(timezone.utc)
+        absolute_expires_at = now + timedelta(seconds=self.max_ttl)
+
+        # Temporary TTL for chunks during ingestion (5 minutes)
+        staging_ttl = 300
+
+        chunk_index = 0
+        total_rows = 0
+        total_stored = 0
+        schema = None
+        stats_accum = _IncrementalStats()
+
+        pipe = self.redis.pipeline()
+        async for batch in batches:
+            if schema is None:
+                schema = batch.schema
+            total_rows += batch.num_rows
+            if total_rows > self.max_rows:
+                # Clean up already written chunks
+                for idx in range(chunk_index):
+                    pipe.delete(self._chunk_key(result_id, idx))
+                await pipe.execute()
+                raise tool_error(
+                    "RESULT_SET_TOO_LARGE",
+                    f"Row count exceeded {self.max_rows}",
+                )
+
+            stats_accum.update(batch)
+
+            chunk_key = self._chunk_key(result_id, chunk_index)
+            serialized = serialize_table(pa.Table.from_batches([batch]))
+            total_stored += len(serialized)
+            pipe.set(chunk_key, serialized, ex=staging_ttl)
+            chunk_index += 1
+
+            # Flush pipeline periodically to avoid huge pipelines
+            if chunk_index % 10 == 0:
+                await pipe.execute()
+                pipe = self.redis.pipeline()
+
+        await pipe.execute()
+
+        columns_info = stats_accum.finalize(schema)
+        meta = ResultSetMetadata(
+            result_id=result_id,
+            owner_session_id=session_id,
+            source=source,
+            created_at=now,
+            last_accessed_at=now,
+            absolute_expires_at=absolute_expires_at,
+            row_count=total_rows,
+            column_count=len(schema),
+            uncompressed_size_bytes=0,  # not tracked in stream
+            stored_size_bytes=total_stored,
+            chunk_count=chunk_index,
+            columns=columns_info,
+            source_parameters=source_parameters,
+        )
+
+        # Promote all chunk TTLs to max_ttl and write metadata + session index
+        pipe = self.redis.pipeline()
+        for idx in range(chunk_index):
+            pipe.expire(self._chunk_key(result_id, idx), self.max_ttl)
+        pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=self.max_ttl)
+        pipe.sadd(self._session_key(session_id), result_id)
+        pipe.expire(self._session_key(session_id), self.max_ttl)
+        await pipe.execute()
+
+        logger.info(
+            "Stream-stored result set %s: %d rows, %d chunks, %d bytes",
+            result_id, total_rows, chunk_index, total_stored,
+        )
+
+        # Build summary with only name, type, null_count (as per agent.md)
+        summary_columns = [
+            ColumnInfo(name=c.name, type=c.type, null_count=c.null_count)
+            for c in columns_info
+        ]
+        return ResultSetSummary(
+            result_id=result_id,
+            source=source,
+            row_count=total_rows,
+            column_count=len(schema),
+            stored_size_bytes=total_stored,
+            created_at=now,
+            expires_at=absolute_expires_at,
+            columns=summary_columns,
+        )
+
     # ---------- retrieval ----------
     async def get_metadata(self, result_id: str) -> Optional[ResultSetMetadata]:
         data = await self.redis.get(self._meta_key(result_id))
@@ -256,5 +354,81 @@ class ResultSetStore:
                 avg=avg_val,
                 min_length=min_len,
                 max_length=max_len,
+            ))
+        return infos
+
+
+class _IncrementalStats:
+    """Accumulate column statistics across multiple record batches."""
+
+    def __init__(self):
+        self._stats = {}  # column name -> dict of accumulators
+
+    def update(self, batch: pa.RecordBatch):
+        import pyarrow.compute as pc
+        for field in batch.schema:
+            col = batch.column(field.name)
+            name = field.name
+            if name not in self._stats:
+                self._stats[name] = {
+                    "null_count": 0,
+                    "min": None,
+                    "max": None,
+                    "sum": 0.0,
+                    "count": 0,
+                    "min_length": None,
+                    "max_length": None,
+                }
+            s = self._stats[name]
+            s["null_count"] += col.null_count
+
+            non_null = col.num_rows - col.null_count
+            if non_null == 0:
+                continue
+
+            if pa.types.is_integer(col.type) or pa.types.is_floating(col.type):
+                col_min = pc.min(col).as_py()
+                col_max = pc.max(col).as_py()
+                col_sum = pc.sum(col).as_py()
+                if s["min"] is None or col_min < s["min"]:
+                    s["min"] = col_min
+                if s["max"] is None or col_max > s["max"]:
+                    s["max"] = col_max
+                s["sum"] += col_sum
+                s["count"] += non_null
+            elif pa.types.is_date(col.type) or pa.types.is_timestamp(col.type):
+                col_min = pc.min(col).as_py()
+                col_max = pc.max(col).as_py()
+                if s["min"] is None or col_min < s["min"]:
+                    s["min"] = col_min
+                if s["max"] is None or col_max > s["max"]:
+                    s["max"] = col_max
+            elif pa.types.is_string(col.type) or pa.types.is_large_string(col.type):
+                lengths = pc.utf8_length(col)
+                col_min_len = pc.min(lengths).as_py()
+                col_max_len = pc.max(lengths).as_py()
+                if s["min_length"] is None or col_min_len < s["min_length"]:
+                    s["min_length"] = col_min_len
+                if s["max_length"] is None or col_max_len > s["max_length"]:
+                    s["max_length"] = col_max_len
+
+    def finalize(self, schema: pa.Schema) -> List[ColumnInfo]:
+        infos = []
+        for field in schema:
+            s = self._stats.get(field.name, {})
+            avg = None
+            if s.get("count", 0) > 0 and s.get("sum") is not None:
+                avg = s["sum"] / s["count"]
+            infos.append(ColumnInfo(
+                name=field.name,
+                type=str(field.type),
+                null_count=s.get("null_count", 0),
+                non_null_count=(s.get("count", 0) or 0) + (s.get("null_count", 0)),  # approximated
+                min=s.get("min"),
+                max=s.get("max"),
+                sum=s.get("sum"),
+                avg=avg,
+                min_length=s.get("min_length"),
+                max_length=s.get("max_length"),
             ))
         return infos

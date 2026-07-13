@@ -5,6 +5,7 @@ from py_key_value_aio.redis import RedisStore
 from redis.asyncio import Redis
 from .config import settings
 from .result_store import ResultSetStore
+from .tools import customers, result_sets
 
 logger = logging.getLogger(__name__)
 
