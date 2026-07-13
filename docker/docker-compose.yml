@@ -1,0 +1,36 @@
+services:
+  mcp:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    ports:
+      - "9000:9000"
+    env_file:
+      - ../.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - alphaplan-net
+
+  redis:
+    image: redis:7.2-alpine
+    command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
+    volumes:
+      - redis-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - alphaplan-net
+
+volumes:
+  redis-data:
+
+networks:
+  alphaplan-net:
+    driver: bridge
