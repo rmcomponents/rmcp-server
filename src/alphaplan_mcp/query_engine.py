@@ -388,6 +388,7 @@ class QueryEngine:
                 col_entry = {
                     "name": col_info.name,
                     "type": col_info.type,
+                    "description": col_info.description,
                     "null_count": col_info.null_count,
                     "non_null_count": col_info.non_null_count,
                     "min": col_info.min,
@@ -418,6 +419,7 @@ class QueryEngine:
                 result.append({
                     "name": col_info.name,
                     "type": col_info.type,
+                    "description": col_info.description,
                     "null_count": col_info.null_count,
                     "non_null_count": col_info.non_null_count,
                     "min": col_info.min,

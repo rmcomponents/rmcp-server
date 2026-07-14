@@ -390,6 +390,7 @@ class ResultSetStore:
                 min_len = pc.min(lengths).as_py()
                 max_len = pc.max(lengths).as_py()
 
+            description = field.metadata.get(b"description", b"").decode("utf-8") if field.metadata else ""
             infos.append(ColumnInfo(
                 name=field.name,
                 type=str(col.type),
@@ -401,6 +402,7 @@ class ResultSetStore:
                 avg=avg_val,
                 min_length=min_len,
                 max_length=max_len,
+                description=description,
             ))
         return infos
 
@@ -466,6 +468,7 @@ class _IncrementalStats:
             avg = None
             if s.get("count", 0) > 0 and s.get("sum") is not None:
                 avg = s["sum"] / s["count"]
+            description = field.metadata.get(b"description", b"").decode("utf-8") if field.metadata else ""
             infos.append(ColumnInfo(
                 name=field.name,
                 type=str(field.type),
@@ -477,5 +480,6 @@ class _IncrementalStats:
                 avg=avg,
                 min_length=s.get("min_length"),
                 max_length=s.get("max_length"),
+                description=description,
             ))
         return infos

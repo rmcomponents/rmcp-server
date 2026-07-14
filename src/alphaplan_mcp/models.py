@@ -19,6 +19,7 @@ class ColumnInfo(BaseModel):
     max_length: Optional[int] = None
     distinct_count: Optional[int] = None
     examples: Optional[List[Any]] = None
+    description: Optional[str] = None
 
 class ResultSetMetadata(BaseModel):
     result_id: str

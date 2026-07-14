@@ -29,6 +29,17 @@ WHERE name LIKE ?
 ORDER BY adress_nummer
 """
 
+_CUSTOMER_COLUMN_DESCRIPTIONS = {
+    "adress_nummer": "Unique identifier for the customer address.",
+    "name": "Customer name.",
+    "branche": "Industry sector of the customer.",
+    "ort": "City of the customer address.",
+    "plz": "Postal code of the customer address.",
+    "land": "Country of the customer address.",
+    "telefon": "Phone number of the customer.",
+    "email": "Email address of the customer.",
+}
+
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
     conn_str = (
@@ -74,6 +85,16 @@ async def fetch_customers_stream(
                     break
                 dicts = [dict(zip(columns, row)) for row in rows]
                 batch = pa.RecordBatch.from_pylist(dicts)
+                # Attach column descriptions to the schema metadata
+                new_fields = []
+                for field in batch.schema:
+                    desc = _CUSTOMER_COLUMN_DESCRIPTIONS.get(field.name)
+                    if desc:
+                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
+                        new_fields.append(field.with_metadata(metadata))
+                    else:
+                        new_fields.append(field)
+                batch = batch.with_schema(pa.schema(new_fields))
                 queue.put_nowait(batch)
         except Exception as e:
             logger.exception("Error fetching customers")
