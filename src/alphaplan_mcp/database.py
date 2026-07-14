@@ -1,3 +1,6 @@
+# Manages SQL Server connections via pyodbc.
+# Consumes application settings, enforces timeouts,
+# and runs blocking calls asynchronously.
 """SQL Server connection and customer data fetching."""
 
 import logging

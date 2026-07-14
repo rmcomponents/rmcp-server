@@ -1,3 +1,6 @@
+# Handles serialization and deserialization of PyArrow tables
+# and ResultSetMetadata to/from bytes for Redis storage,
+# preserving database types.
 """PyArrow serialization helpers."""
 
 import json

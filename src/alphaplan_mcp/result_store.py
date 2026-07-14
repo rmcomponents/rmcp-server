@@ -1,3 +1,5 @@
+# Implements the ResultSetStore for chunked, transactional Redis storage.
+# Enforces ownership, TTLs, and complete-or-fail safety limits.
 """Redis-backed result‑set storage with ownership, TTL, and chunking."""
 
 import asyncio

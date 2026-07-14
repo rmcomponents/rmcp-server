@@ -1,3 +1,5 @@
+# Defines stable, machine-readable ToolError exceptions and wrappers.
+# Ensures no sensitive data or stack traces are leaked to the MCP client.
 """Application error codes and helpers."""
 
 import logging

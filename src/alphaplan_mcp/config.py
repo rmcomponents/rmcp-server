@@ -1,3 +1,6 @@
+# Defines the typed Settings class using pydantic-settings.
+# Loads and validates configuration at startup, including Redis,
+# result-set limits, and SQL Server settings.
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):

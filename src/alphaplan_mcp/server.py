@@ -1,3 +1,6 @@
+# Constructs the FastMCP application with a Redis-backed session state store
+# and application result-set client.
+# Manages server lifespan, health checks, and cleanup tasks.
 import asyncio
 import logging
 from contextlib import asynccontextmanager

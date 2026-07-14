@@ -1,3 +1,5 @@
+# Defines reusable Pydantic models for generic tool arguments,
+# including filtering, sorting, and aggregation specifications.
 """Pydantic models for metadata, filters, sorting, and aggregations."""
 
 from datetime import datetime

@@ -1,3 +1,6 @@
+# Implements the list_customers MCP tool.
+# Fetches complete customer result sets from SQL Server incrementally
+# and stores them in Redis, returning only a compact summary.
 """Customer ingestion tool."""
 
 import logging

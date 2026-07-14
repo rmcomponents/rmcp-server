@@ -1,3 +1,6 @@
+# Implements generic MCP tools for exploring and aggregating stored result sets,
+# such as list_rows, query_rows, and aggregate.
+# Enforces session ownership and safety limits.
 """Generic result‑set tools."""
 
 import logging

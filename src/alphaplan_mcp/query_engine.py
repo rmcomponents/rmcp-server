@@ -1,3 +1,6 @@
+# Implements the shared QueryEngine for safe filtering, grouping,
+# sorting, and aggregation on materialized result sets using Polars,
+# without constructing arbitrary SQL.
 """Polars‑based query engine for stored result sets."""
 
 import logging

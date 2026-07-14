@@ -1,3 +1,5 @@
+# Legacy or alternative entry point containing initial MCP tool definitions
+# before refactoring into the alphaplan_mcp package structure.
 #!/usr/bin/env python3
 
 import os
