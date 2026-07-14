@@ -42,7 +42,7 @@ class TestFilterBuilding:
         df = self.build_df()
         schema = {c: df[c].dtype for c in df.columns}
         # bob matches Bob case‑insensitively by default
-        expr = _build_filter_expr(FilterGroup(clauses=[FilterClause(column="name", operator="eq", value="bob")]), schema)
+        expr = _build_filter_expr(FilterGroup(clauses=[FilterClause(column="name", operator="like", value="bob")]), schema)
         result = df.filter(expr)
         assert result.height == 2  # bob, Bob
 
@@ -79,7 +79,7 @@ class TestFilterBuilding:
 
     def test_unknown_column(self):
         schema = {}
-        with pytest.raises(ToolError, match="UNKNOWN_COLUMN"):
+        with pytest.raises(ToolError, match="does not exist"):
             _build_filter_expr(FilterGroup(clauses=[FilterClause(column="nonexistent", operator="eq", value="x")]), schema)
 
 

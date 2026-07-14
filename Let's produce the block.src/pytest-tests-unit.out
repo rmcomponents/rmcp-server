@@ -1,0 +1,14 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0
+rootdir: /home/andybrandi/workspace/alphaplan-mcp
+configfile: pyproject.toml
+plugins: asyncio-1.4.0, anyio-4.14.1
+asyncio: mode=Mode.STRICT, debug=False, asyncio_default_fixture_loop_scope=None, asyncio_default_test_loop_scope=function
+collected 20 items
+
+../tests/unit/test_query_engine.py .............                            [ 50%]
+../tests/unit/test_result_store.py sssss                                 [ 75%]
+../tests/unit/test_serialization.py .....                                [100%]
+
+=========================== short test summary info ============================
+PASSED 15, SKIPPED 5 in 0.27s

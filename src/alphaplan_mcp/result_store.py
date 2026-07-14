@@ -374,7 +374,7 @@ class ResultSetStore:
         for field in table.schema:
             col = table.column(field.name)
             null_count = col.null_count
-            non_null_count = col.num_rows - null_count
+            non_null_count = table.num_rows - null_count
             min_val = max_val = sum_val = avg_val = min_len = max_len = None
 
             if pa.types.is_integer(col.type) or pa.types.is_floating(col.type):

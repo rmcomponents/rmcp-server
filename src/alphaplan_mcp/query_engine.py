@@ -139,7 +139,8 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
             return col_expr.str.to_lowercase().str.ends_with(value.lower())
     elif op in ("gt", "gte", "lt", "lte"):
         # numeric/date comparisons
-        return getattr(col_expr, op)(_py_value_to_polars(value))
+        polars_op = {"gt": "gt", "gte": "ge", "lt": "lt", "lte": "le"}[op]
+        return getattr(col_expr, polars_op)(_py_value_to_polars(value))
     elif op == "in":
         if not isinstance(value, list):
             raise tool_error("INVALID_ARGUMENT", "Operator 'in' requires a list of values.")
@@ -168,6 +169,8 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
 
 def _needs_like(value: str) -> bool:
     """Check if value contains unescaped % or _."""
+    if not isinstance(value, str):
+        return False
     i = 0
     while i < len(value):
         if value[i] == "\\":
@@ -212,6 +215,9 @@ def _string_like(col_expr, pattern: str, case_sensitive: bool, negate: bool = Fa
             regex_parts.append(re.escape(c))
         i += 1
     full_regex = "^" + "".join(regex_parts) + "$"
+    if not case_sensitive:
+        full_regex = "(?i)" + full_regex
+
     # Polars' str.contains with regex
     if negate:
         return ~col_expr.str.contains(full_regex, literal=False)

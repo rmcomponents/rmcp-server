@@ -1,12 +1,14 @@
 import pytest
+import pytest_asyncio
 
 pytest_plugins = ["pytest_asyncio"]
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def fake_redis():
-    from fakeredis import FakeRedis
+    fakeredis = pytest.importorskip("fakeredis")
+    from fakeredis import FakeAsyncRedis
 
-    r = FakeRedis(decode_responses=False)
+    r = FakeAsyncRedis(decode_responses=False)
     yield r
     await r.aclose()
