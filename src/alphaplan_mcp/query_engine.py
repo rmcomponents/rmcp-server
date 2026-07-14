@@ -285,7 +285,7 @@ def _build_agg_exprs(aggregations: List[AggregationSpec]) -> List[pl.Expr]:
         if op == "count":
             if col:
                 raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
-            agg_exprs.append(pl.count().alias(alias))
+            agg_exprs.append(pl.len().alias(alias))
         elif op == "count_non_null":
             if not col:
                 raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
@@ -562,7 +562,14 @@ class QueryEngine:
     ) -> Dict[str, Any]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
         meta = await self._ensure_owned(result_id)
-        df = await self._load_full_df(result_id, columns=columns)
+
+        # Determine needed columns for both filtering and selecting
+        needed_cols = set(columns) if columns else set()
+        if filters and filters.clauses:
+            for clause in filters.clauses:
+                needed_cols.add(clause.column)
+
+        df = await self._load_full_df(result_id, columns=list(needed_cols) if needed_cols else None)
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
             mask = _build_filter_expr(filters, schema)
@@ -570,6 +577,9 @@ class QueryEngine:
         total_rows = df.height
         if sort:
             df = _apply_sort(df, sort)
+        # Select only the requested columns before returning
+        if columns:
+            df = df.select(columns)
         return _format_paginated_result(result_id, df, offset, limit, total_rows)
 
     async def distinct_values(
@@ -593,9 +603,9 @@ class QueryEngine:
         # Compute value counts
         if include_null:
             # Polars group_by includes nulls by default
-            value_counts = df.group_by(column).agg(pl.count().alias("count"))
+            value_counts = df.group_by(column).agg(pl.len().alias("count"))
         else:
-            value_counts = df.drop_nulls().group_by(column).agg(pl.count().alias("count"))
+            value_counts = df.drop_nulls().group_by(column).agg(pl.len().alias("count"))
         # Order
         if order == "count_desc":
             value_counts = value_counts.sort("count", descending=True)
@@ -740,34 +750,15 @@ class QueryEngine:
                 "null_count": null_count,
                 "histogram": [],
             }
-        # Create bin boundaries
-        # Edge case: if all values are the same, Polars cut would fail or produce a single bin. We handle this by creating a single bin edge.
-        if col_min == col_max:
-            # Single value
-            bin_edges = [col_min, col_max]
-        else:
-            bin_edges = []
-            step = (col_max - col_min) / bins
-            for i in range(bins + 1):
-                bin_edges.append(col_min + i * step)
-        # Cut into bins
-        # Polars cut returns a struct with breakpoint and category
-        # We'll compute counts manually using cut
-        cut_expr = pl.col(column).cut(bin_edges, include_breaks=True).alias("bin")
-        binned = non_null.with_columns(cut_expr)
-        # NEW: extract breakpoint for numeric sort
-        binned = binned.with_columns(pl.col("bin").struct.field("breakpoint").alias("breakpoint_val"))
-        counts = binned.group_by("bin", "breakpoint_val").agg(pl.count().alias("count")).sort("breakpoint_val")
+        # Use Polars built-in hist function on the Series directly
+        # Note: Series.hist accepts bin_count (not bins) in current Polars versions.
+        hist_df = non_null[column].hist(bin_count=bins)
+        
         histogram = []
-        for row in counts.iter_rows(named=True):
-            bin_info = row["bin"]
-            # bin_info is a struct with fields: breakpoint, category
-            # We'll extract breakpoint as upper bound
-            breakpoint = bin_info["breakpoint"]
-            count = row["count"]
+        for row in hist_df.iter_rows(named=True):
             histogram.append({
-                "upper_bound": _normalize_value(breakpoint),
-                "count": count,
+                "upper_bound": _normalize_value(row["breakpoint"]),
+                "count": row["count"],
             })
         return {
             "result_id": result_id,
