@@ -106,13 +106,6 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
     if value is None:
         raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a value.")
 
-    # For string-like operations, handle LIKE wildcards if present
-    if pa.types.is_string(dtype) or pa.types.is_large_string(dtype):
-        if op in ("eq", "ne", "like", "not_like", "contains", "starts_with", "ends_with"):
-            # If value contains % or _ (and not escaped), use regex
-            # We'll decide based on operator.
-            pass  # handle below
-
     if op == "eq":
         if _needs_like(value):
             # treat as LIKE with case-insensitive default unless case_sensitive
@@ -268,6 +261,83 @@ def _df_to_rows(df: pl.DataFrame) -> List[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# helpers for aggregation and pagination
+# ---------------------------------------------------------------------------
+
+def _build_agg_exprs(aggregations: List[AggregationSpec]) -> List[pl.Expr]:
+    """Translate AggregationSpecs into Polars aggregation expressions.
+    
+    Note: For chunked processing, avg is computed as sum/count. Polars handles 
+    this correctly when aggregating a full DataFrame, but if we ever stream 
+    chunks, we must aggregate sum and count separately to maintain numerical correctness.
+    """
+    agg_exprs = []
+    for agg in aggregations:
+        op = agg.operation.lower()
+        alias = agg.alias
+        col = agg.column
+        if op == "count":
+            if col:
+                raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
+            agg_exprs.append(pl.count().alias(alias))
+        elif op == "count_non_null":
+            if not col:
+                raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
+            agg_exprs.append(pl.col(col).count().alias(alias))
+        elif op == "count_distinct":
+            if not col:
+                raise tool_error("INVALID_AGGREGATION", "count_distinct requires a column.")
+            agg_exprs.append(pl.col(col).n_unique().alias(alias))
+        elif op == "sum":
+            if not col:
+                raise tool_error("INVALID_AGGREGATION", "sum requires a column.")
+            agg_exprs.append(pl.col(col).sum().alias(alias))
+        elif op == "avg":
+            if not col:
+                raise tool_error("INVALID_AGGREGATION", "avg requires a column.")
+            agg_exprs.append(pl.col(col).mean().alias(alias))
+        elif op == "min":
+            if not col:
+                raise tool_error("INVALID_AGGREGATION", "min requires a column.")
+            agg_exprs.append(pl.col(col).min().alias(alias))
+        elif op == "max":
+            if not col:
+                raise tool_error("INVALID_AGGREGATION", "max requires a column.")
+            agg_exprs.append(pl.col(col).max().alias(alias))
+        else:
+            raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.")
+    
+    if not agg_exprs:
+        raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
+        
+    return agg_exprs
+
+
+def _format_paginated_result(
+    result_id: str, 
+    df: pl.DataFrame, 
+    offset: int, 
+    limit: int, 
+    total_rows: int
+) -> Dict[str, Any]:
+    """Apply offset/limit slicing and format the standard pagination response."""
+    df_slice = df.slice(offset, limit)
+    rows = _df_to_rows(df_slice)
+    has_more = offset + limit < total_rows
+    next_offset = offset + limit if has_more else None
+    return {
+        "result_id": result_id,
+        "offset": offset,
+        "limit": limit,
+        "returned": len(rows),
+        "total_rows": total_rows,
+        "has_more": has_more,
+        "next_offset": next_offset,
+        "rows": rows,
+    }
+
+
+# ---------------------------------------------------------------------------
 # QueryEngine
 # ---------------------------------------------------------------------------
 
@@ -294,7 +364,7 @@ class QueryEngine:
 
     async def _load_full_df(self, result_id: str, columns: Optional[List[str]] = None) -> pl.DataFrame:
         meta = await self._ensure_owned(result_id)
-        # Safety: refuse to load huge result sets entirely into memory
+        # Safety: refuse to load huge result sets entirely into memory to prevent OOM.
         if meta.uncompressed_size_bytes > self.settings.RESULTSET_MAX_BYTES:
             raise tool_error(
                 "OPERATION_TOO_LARGE",
@@ -448,39 +518,14 @@ class QueryEngine:
             df = await self._load_full_df(result_id, columns=columns)
             df = _apply_sort(df, sort)
             total_rows = df.height
-            df_slice = df.slice(offset, limit)
-            rows = _df_to_rows(df_slice)
-            has_more = offset + limit < total_rows
-            next_offset = offset + limit if has_more else None
-            return {
-                "result_id": result_id,
-                "offset": offset,
-                "limit": limit,
-                "returned": len(rows),
-                "total_rows": total_rows,
-                "has_more": has_more,
-                "next_offset": next_offset,
-                "rows": rows,
-            }
+            return _format_paginated_result(result_id, df, offset, limit, total_rows)
         else:
             # Use range loading to load only the needed rows
             # Determine start and end rows (1-indexed for load_range)
             start = offset
             end = min(offset + limit, meta.row_count)
             df = await self._load_range_df(result_id, start, end, columns=columns)
-            rows = _df_to_rows(df)
-            has_more = offset + limit < meta.row_count
-            next_offset = offset + limit if has_more else None
-            return {
-                "result_id": result_id,
-                "offset": offset,
-                "limit": limit,
-                "returned": len(rows),
-                "total_rows": meta.row_count,
-                "has_more": has_more,
-                "next_offset": next_offset,
-                "rows": rows,
-            }
+            return _format_paginated_result(result_id, df, offset, limit, meta.row_count)
 
     async def count_rows(
         self,
@@ -519,20 +564,7 @@ class QueryEngine:
         total_rows = df.height
         if sort:
             df = _apply_sort(df, sort)
-        df_slice = df.slice(offset, limit)
-        rows = _df_to_rows(df_slice)
-        has_more = offset + limit < total_rows
-        next_offset = offset + limit if has_more else None
-        return {
-            "result_id": result_id,
-            "offset": offset,
-            "limit": limit,
-            "returned": len(rows),
-            "total_rows": total_rows,
-            "has_more": has_more,
-            "next_offset": next_offset,
-            "rows": rows,
-        }
+        return _format_paginated_result(result_id, df, offset, limit, total_rows)
 
     async def distinct_values(
         self,
@@ -607,43 +639,7 @@ class QueryEngine:
             mask = _build_filter_expr(filters, schema)
             df = df.filter(mask)
         # Build aggregation expressions
-        agg_exprs = []
-        for agg in aggregations:
-            op = agg.operation.lower()
-            alias = agg.alias
-            col = agg.column
-            if op == "count":
-                if col:
-                    raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
-                agg_exprs.append(pl.count().alias(alias))
-            elif op == "count_non_null":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
-                agg_exprs.append(pl.col(col).count().alias(alias))
-            elif op == "count_distinct":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "count_distinct requires a column.")
-                agg_exprs.append(pl.col(col).n_unique().alias(alias))
-            elif op == "sum":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "sum requires a column.")
-                agg_exprs.append(pl.col(col).sum().alias(alias))
-            elif op == "avg":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "avg requires a column.")
-                agg_exprs.append(pl.col(col).mean().alias(alias))
-            elif op == "min":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "min requires a column.")
-                agg_exprs.append(pl.col(col).min().alias(alias))
-            elif op == "max":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "max requires a column.")
-                agg_exprs.append(pl.col(col).max().alias(alias))
-            else:
-                raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.")
-        if not agg_exprs:
-            raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
+        agg_exprs = _build_agg_exprs(aggregations)
         result_df = df.select(agg_exprs)
         row = result_df.to_dicts()[0]
         normalized = {k: _normalize_value(v) for k, v in row.items()}
@@ -674,46 +670,10 @@ class QueryEngine:
             mask = _build_filter_expr(filters, schema)
             df = df.filter(mask)
         # Build aggregation expressions
-        agg_exprs = []
-        for agg in aggregations:
-            op = agg.operation.lower()
-            alias = agg.alias
-            col = agg.column
-            if op == "count":
-                if col:
-                    raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
-                agg_exprs.append(pl.count().alias(alias))
-            elif op == "count_non_null":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
-                agg_exprs.append(pl.col(col).count().alias(alias))
-            elif op == "count_distinct":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "count_distinct requires a column.")
-                agg_exprs.append(pl.col(col).n_unique().alias(alias))
-            elif op == "sum":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "sum requires a column.")
-                agg_exprs.append(pl.col(col).sum().alias(alias))
-            elif op == "avg":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "avg requires a column.")
-                agg_exprs.append(pl.col(col).mean().alias(alias))
-            elif op == "min":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "min requires a column.")
-                agg_exprs.append(pl.col(col).min().alias(alias))
-            elif op == "max":
-                if not col:
-                    raise tool_error("INVALID_AGGREGATION", "max requires a column.")
-                agg_exprs.append(pl.col(col).max().alias(alias))
-            else:
-                raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.")
-        if not agg_exprs:
-            raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
+        agg_exprs = _build_agg_exprs(aggregations)
         # Group by
         grouped = df.group_by(group_columns).agg(agg_exprs)
-        # Enforce max groups
+        # Enforce max groups to prevent memory exhaustion from high-cardinality groupings.
         if grouped.height > self.settings.RESULTSET_MAX_GROUPS:
             raise tool_error(
                 "TOO_MANY_GROUPS",
@@ -775,6 +735,7 @@ class QueryEngine:
                 "histogram": [],
             }
         # Create bin boundaries
+        # Edge case: if all values are the same, Polars cut would fail or produce a single bin. We handle this by creating a single bin edge.
         if col_min == col_max:
             # Single value
             bin_edges = [col_min, col_max]

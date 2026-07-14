@@ -102,6 +102,32 @@ docker compose -f docker/docker-compose.yml up --build
 
 The MCP endpoint will be available at `http://localhost:9000`.
 
+## Running Tests
+
+The project uses `pytest` and `pytest-asyncio` for testing. Unit tests mock Redis using `fakeredis`, while integration tests may require a running Redis instance.
+
+To run the tests, navigate to the `src` directory and execute:
+
+```bash
+# If using uv
+uv run pytest
+
+# Or using standard pytest within your virtual environment
+pytest
+```
+
+To run only the unit tests:
+
+```bash
+pytest tests/unit
+```
+
+To run only the integration tests (ensure Redis is running if they don't use fakeredis):
+
+```bash
+pytest tests/integration
+```
+
 ## Result-Set Lifecycle
 
 1. A tool like `list_customers` fetches data from the database and stores it in Redis as chunked Arrow IPC bytes.
