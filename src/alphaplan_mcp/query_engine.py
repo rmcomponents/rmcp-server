@@ -351,22 +351,15 @@ class QueryEngine:
     def __init__(
         self,
         result_store: ResultSetStore,
-        session_id: str,
         settings_obj: Settings = settings,
     ):
         self.store = result_store
-        self.session_id = session_id
         self.settings = settings_obj
 
     async def _ensure_owned(self, result_id: str) -> ResultSetMetadata:
         meta = await self.store.get_metadata(result_id)
         if meta is None:
             raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
-        if meta.owner_session_id != self.session_id:
-            logger.warning(
-                "Session mismatch for result set %s: owner=%s, requester=%s",
-                result_id, meta.owner_session_id, self.session_id
-            )
         # update access to extend TTL
         await self.store.update_access(result_id)
         return meta
@@ -422,20 +415,6 @@ class QueryEngine:
             "columns": [c.model_dump() for c in meta.columns],
         }
 
-    async def list_result_sets(self) -> List[Dict[str, Any]]:
-        metas = await self.store.list_results(self.session_id)
-        result = []
-        for meta in metas:
-            result.append({
-                "result_id": meta.result_id,
-                "source": meta.source,
-                "row_count": meta.row_count,
-                "column_count": meta.column_count,
-                "stored_size_bytes": meta.stored_size_bytes,
-                "created_at": meta.created_at.isoformat(),
-                "expires_at": meta.absolute_expires_at.isoformat(),
-            })
-        return result
 
     async def explain_columns(
         self,
@@ -483,10 +462,22 @@ class QueryEngine:
                     col_entry["distinct_count"] = distinct_count
                 except Exception:
                     col_entry["distinct_count"] = None
-                # examples (first 3 non-null)
+                # examples (up to 3 distinct non-empty values)
                 if include_examples:
                     try:
-                        examples = df[col_name].drop_nulls().head(3).to_list()
+                        col_series = df[col_name]
+                        non_null = col_series.drop_nulls()
+                        # Filter out empty strings for string/categorical columns
+                        if non_null.dtype in (pl.Utf8, pl.Categorical):
+                            non_empty = non_null.filter(non_null != "")
+                        else:
+                            non_empty = non_null
+                        
+                        if non_empty.len() > 0:
+                            examples = non_empty.unique(maintain_order=True).head(3).to_list()
+                        else:
+                            examples = []
+                            
                         col_entry["examples"] = [_normalize_value(v) for v in examples]
                     except Exception:
                         col_entry["examples"] = []
@@ -520,6 +511,10 @@ class QueryEngine:
         sort: Optional[List[SortSpec]] = None,
     ) -> Dict[str, Any]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
+        if offset < 0:
+            offset = 0
+        if limit < 0:
+            limit = 0
         meta = await self._ensure_owned(result_id)
 
         if sort:
@@ -530,11 +525,33 @@ class QueryEngine:
             return _format_paginated_result(result_id, df, offset, limit, total_rows)
         else:
             # Use range loading to load only the needed rows
-            # Determine start and end rows (1-indexed for load_range)
+            if limit == 0 or offset >= meta.row_count:
+                return {
+                    "result_id": result_id,
+                    "offset": offset,
+                    "limit": limit,
+                    "returned": 0,
+                    "total_rows": meta.row_count,
+                    "has_more": False,
+                    "next_offset": None,
+                    "rows": [],
+                }
             start = offset
             end = min(offset + limit, meta.row_count)
             df = await self._load_range_df(result_id, start, end, columns=columns)
-            return _format_paginated_result(result_id, df, offset, limit, meta.row_count)
+            rows = _df_to_rows(df)
+            has_more = end < meta.row_count
+            next_offset = end if has_more else None
+            return {
+                "result_id": result_id,
+                "offset": offset,
+                "limit": limit,
+                "returned": len(rows),
+                "total_rows": meta.row_count,
+                "has_more": has_more,
+                "next_offset": next_offset,
+                "rows": rows,
+            }
 
     async def count_rows(
         self,
@@ -564,6 +581,10 @@ class QueryEngine:
         offset: int = 0,
     ) -> Dict[str, Any]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
+        if offset < 0:
+            offset = 0
+        if limit < 0:
+            limit = 0
         meta = await self._ensure_owned(result_id)
 
         # Determine needed columns for both filtering and selecting
@@ -731,9 +752,10 @@ class QueryEngine:
         if filters and filters.clauses:
             mask = _build_filter_expr(filters, schema)
             df = df.filter(mask)
-        # Drop nulls for binning
+        
         non_null = df.drop_nulls()
         null_count = df.height - non_null.height
+        
         if non_null.height == 0:
             return {
                 "result_id": result_id,
@@ -742,42 +764,73 @@ class QueryEngine:
                 "null_count": null_count,
                 "histogram": [],
             }
-        # Determine min and max
-        col_min = non_null[column].min()
-        col_max = non_null[column].max()
-        if col_min is None or col_max is None:
+
+        col_type = non_null[column].dtype
+        
+        if col_type in (pl.Utf8, pl.Categorical):
+            # String histogram: top N values by count
+            max_bins = min(bins, self.settings.TOOL_MAX_DISTINCT_VALUES)
+            value_counts = non_null.group_by(column).agg(pl.len().alias("count"))
+            value_counts = value_counts.sort("count", descending=True)
+            
+            total_distinct = value_counts.height
+            top_values = value_counts.slice(0, max_bins)
+            
+            histogram = []
+            for row in top_values.iter_rows(named=True):
+                histogram.append({
+                    "value": _normalize_value(row[column]),
+                    "count": row["count"],
+                })
+                
+            other_count = 0
+            if total_distinct > max_bins:
+                other_count = non_null.height - top_values["count"].sum()
+                
             return {
                 "result_id": result_id,
                 "column": column,
-                "bins": 0,
+                "bins": len(histogram),
                 "null_count": null_count,
-                "histogram": [],
+                "histogram": histogram,
+                "other_count": other_count,
+                "total_distinct": total_distinct,
             }
-        # Use Polars built-in hist function on the Series directly
-        # Note: Series.hist accepts bin_count (not bins) in current Polars versions.
-        try:
-            hist_df = non_null[column].hist(bin_count=bins)
-        except pl.exceptions.InvalidOperationError:
-            raise tool_error(
-                "INVALID_ARGUMENT",
-                f"Column '{column}' is not numeric and cannot be used for histograms."
-            )
-        
-        histogram = []
-        for row in hist_df.iter_rows(named=True):
-            histogram.append({
-                "upper_bound": _normalize_value(row["breakpoint"]),
-                "count": row["count"],
-            })
-        return {
-            "result_id": result_id,
-            "column": column,
-            "bins": len(histogram),
-            "null_count": null_count,
-            "histogram": histogram,
-        }
+        else:
+            # Numeric histogram
+            col_min = non_null[column].min()
+            col_max = non_null[column].max()
+            if col_min is None or col_max is None:
+                return {
+                    "result_id": result_id,
+                    "column": column,
+                    "bins": 0,
+                    "null_count": null_count,
+                    "histogram": [],
+                }
+            try:
+                hist_df = non_null[column].hist(bin_count=bins)
+            except pl.exceptions.InvalidOperationError:
+                raise tool_error(
+                    "INVALID_ARGUMENT",
+                    f"Column '{column}' is not numeric and cannot be used for histograms."
+                )
+            
+            histogram = []
+            for row in hist_df.iter_rows(named=True):
+                histogram.append({
+                    "upper_bound": _normalize_value(row["breakpoint"]),
+                    "count": row["count"],
+                })
+            return {
+                "result_id": result_id,
+                "column": column,
+                "bins": len(histogram),
+                "null_count": null_count,
+                "histogram": histogram,
+            }
 
     async def delete_result_set(self, result_id: str) -> Dict[str, Any]:
         meta = await self._ensure_owned(result_id)
-        deleted = await self.store.delete_result(self.session_id, result_id)
+        deleted = await self.store.delete_result(result_id)
         return {"result_id": result_id, "deleted": deleted}

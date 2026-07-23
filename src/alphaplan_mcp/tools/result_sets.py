@@ -20,7 +20,7 @@ async def get_result_info(result_id: str, ctx: Context):
     """Return metadata and summary for a stored result set."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.get_result_info(result_id)
     except ToolError as e:
         return e.to_dict()
@@ -29,17 +29,6 @@ async def get_result_info(result_id: str, ctx: Context):
         return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
 
 
-async def list_result_sets(ctx: Context):
-    """List all result sets owned by the current session."""
-    try:
-        store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
-        return await engine.list_result_sets()
-    except ToolError as e:
-        return e.to_dict()
-    except Exception as e:
-        logger.exception("list_result_sets failed")
-        return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
 
 
 async def explain_columns(
@@ -51,7 +40,7 @@ async def explain_columns(
     """Return per‑column statistics, optionally with examples."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.explain_columns(result_id, columns, include_examples)
     except ToolError as e:
         return e.to_dict()
@@ -71,7 +60,7 @@ async def list_rows(
     """Return a subset of rows from a stored result set."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.list_rows(result_id, columns, limit, offset, sort)
     except ToolError as e:
         return e.to_dict()
@@ -88,7 +77,7 @@ async def count_rows(
     """Return the number of rows matching optional filters."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.count_rows(result_id, filters)
     except ToolError as e:
         return e.to_dict()
@@ -109,7 +98,7 @@ async def query_rows(
     """Return rows matching structured filters, with optional sorting and projection."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.query_rows(result_id, filters, columns, sort, limit, offset)
     except ToolError as e:
         return e.to_dict()
@@ -132,7 +121,7 @@ async def distinct_values(
     """Return distinct values for a column, with optional counts and ordering."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.distinct_values(
             result_id, column, filters, limit, offset, include_counts, order, include_null
         )
@@ -152,7 +141,7 @@ async def aggregate(
     """Compute aggregations over the result set (or a filtered subset)."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.aggregate(result_id, aggregations, filters)
     except ToolError as e:
         return e.to_dict()
@@ -174,7 +163,7 @@ async def group_by(
     """Group rows and compute aggregations per group."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.group_by(
             result_id, group_columns, aggregations, filters, sort, limit, offset
         )
@@ -192,10 +181,16 @@ async def histogram(
     filters: Optional[FilterGroup] = None,
     ctx: Context = None,
 ):
-    """Compute a histogram for a numeric or date column."""
+    """
+    Compute a histogram for a numeric, date, or string column.
+    
+    For numeric or date columns, returns binned counts.
+    For string columns, returns the top N most frequent values (where N is `bins`),
+    along with an `other_count` representing the remaining values.
+    """
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.histogram(result_id, column, bins, filters)
     except ToolError as e:
         return e.to_dict()
@@ -208,10 +203,10 @@ async def delete_result_set(
     result_id: str,
     ctx: Context = None,
 ):
-    """Delete a stored result set owned by the current session."""
+    """Delete a stored result set."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
-        engine = QueryEngine(store, ctx.session_id)
+        engine = QueryEngine(store)
         return await engine.delete_result_set(result_id)
     except ToolError as e:
         return e.to_dict()

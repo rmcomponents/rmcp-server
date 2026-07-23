@@ -23,7 +23,6 @@ class ColumnInfo(BaseModel):
 
 class ResultSetMetadata(BaseModel):
     result_id: str
-    owner_session_id: str
     source: str
     created_at: datetime
     last_accessed_at: datetime

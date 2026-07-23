@@ -9,7 +9,7 @@ from key_value.aio.stores.redis import RedisStore
 from redis.asyncio import Redis
 from .config import settings
 from .result_store import ResultSetStore
-from .tools import customers, result_sets
+from .tools import customers, parts, result_sets
 
 logger = logging.getLogger(__name__)
 
@@ -44,13 +44,14 @@ async def lifespan(app):
     await app.redis.close()
     logger.info("Redis connection closed")
 
-mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan, session_state_store=store)
+# mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan, session_state_store=store)
+mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan)
 
 # Register tools
 mcp.tool()(customers.list_customers)
+mcp.tool()(parts.list_parts)
 
 mcp.tool()(result_sets.get_result_info)
-mcp.tool()(result_sets.list_result_sets)
 mcp.tool()(result_sets.explain_columns)
 mcp.tool()(result_sets.list_rows)
 mcp.tool()(result_sets.count_rows)
@@ -71,4 +72,4 @@ async def health_check(request):
         return {"status": "unhealthy", "redis": str(e)}, 503
 
 def main():
-    mcp.run(transport="http", host=settings.MCP_HOST, port=settings.MCP_PORT)
+    mcp.run(transport="http", host=settings.MCP_HOST, port=settings.MCP_PORT, stateless_http=True)

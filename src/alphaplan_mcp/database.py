@@ -51,6 +51,20 @@ _CUSTOMER_COLUMN_DESCRIPTIONS = {
     "sachbearbeiter_auftragsbearbeitung": "Unique name abbreviation of the employee responsible for order processing"
 }
 
+_PART_COLUMN_DESCRIPTIONS = {
+    "ArtikelNummer": "Unique article/part number.",
+    "RollengroesseZoll": "Roll size in inches.",
+    "Beschreibung": "Combined description (short text + long text).",
+    "MatchCode": "Search match code for the part.",
+    "Status": "Status field (Feld02).",
+    "VPE": "Sales unit (Verpackungseinheit).",
+    "HauptLieferant": "Main supplier name.",
+    "NachfolgeArtikel": "Successor article number (Feld03).",
+    "Wiederbeschaffungszeit_Tage": "Replenishment time in days.",
+    "WarenGruppe": "Product group description.",
+    "WarenGruppenNummer": "Product group number."
+}
+
 
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
@@ -127,6 +141,107 @@ async def fetch_customers_stream(
     task = loop.run_in_executor(None, _fetch)
 
     # Yield batches as they become available
+    while True:
+        batch = await queue.get()
+        if batch is None:
+            break
+        yield batch
+    await task  # propagate any exception
+
+
+async def fetch_parts_stream(
+    positive_filter_term: Optional[str] = None,
+    negative_filter_term: Optional[str] = "TCC%",
+    match_code: Optional[str] = None,
+) -> AsyncGenerator[pa.RecordBatch, None]:
+    """
+    Asynchronously yield part rows as Arrow record batches.
+    
+    Supports optional positive/negative filtering on ArtikelNummer and match code search.
+    """
+    import asyncio
+    from asyncio import Queue
+
+    queue: Queue[Optional[pa.RecordBatch]] = asyncio.Queue()
+
+    def _fetch():
+        conn = None
+        cursor = None
+        try:
+            conn = build_connection()
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT 
+                    A.ArtikelNummer, 
+                    A.Groesse AS RollengroesseZoll,
+                    A.Bezeichnung + ' ' + A.LangText AS Beschreibung,
+                    A.MatchCode AS MatchCode,
+                    A.Feld02 AS [Status],
+                    A.K_VPE AS VPE,
+                    L.SuchName AS HauptLieferant,
+                    A.Feld03 AS NachfolgeArtikel,
+                    A.Wiederbeschaffungszeit AS Wiederbeschaffungszeit_Tage,
+                    WG.Bezeichnung AS WarenGruppe,
+                    WG.WarenGruppenNummer AS WarenGruppenNummer
+                FROM ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK)
+                JOIN ALPHAPLAN_EchtDaten.dbo.Adressen L WITH (NOLOCK) ON L.AdressenID = A.HauptLieferantenAdressenID
+                JOIN ALPHAPLAN_EchtDaten.dbo.WarenGruppen WG WITH (NOLOCK) ON WG.WarenGruppenID = A.WarenGruppenID
+                WHERE A.IstArchiviert = 0
+                AND A.ArtikelID > 0
+            """
+            params = []
+            
+            if positive_filter_term:
+                query += " AND A.ArtikelNummer LIKE ?"
+                params.append(positive_filter_term)
+                
+            if negative_filter_term:
+                query += " AND A.ArtikelNummer NOT LIKE ?"
+                params.append(negative_filter_term)
+                
+            if match_code:
+                query += " AND A.MatchCode LIKE ?"
+                params.append(f"%{match_code}%")
+                
+            query += " ORDER BY A.ArtikelNummer ASC"
+            
+            cursor.execute(query, params)
+
+            columns = [col[0] for col in cursor.description]
+            while True:
+                rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
+                if not rows:
+                    break
+                dicts = [dict(zip(columns, row)) for row in rows]
+                batch = pa.RecordBatch.from_pylist(dicts)
+                # Attach column descriptions to the schema metadata
+                new_fields = []
+                for field in batch.schema:
+                    desc = _PART_COLUMN_DESCRIPTIONS.get(field.name)
+                    if desc:
+                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
+                        new_fields.append(field.with_metadata(metadata))
+                    else:
+                        new_fields.append(field)
+                new_schema = pa.schema(new_fields)
+                cols = [batch.column(i) for i in range(batch.num_columns)]
+                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
+                queue.put_nowait(batch)
+        except Exception as e:
+            logger.exception("Error fetching parts")
+            queue.put_nowait(None)  # signal error
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        queue.put_nowait(None)  # signal end
+
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(None, _fetch)
+
     while True:
         batch = await queue.get()
         if batch is None:

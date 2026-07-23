@@ -47,13 +47,9 @@ class ResultSetStore:
     def _chunk_key(self, result_id: str, chunk_index: int) -> str:
         return f"{self._result_key(result_id)}:chunk:{chunk_index:06d}"
 
-    def _session_key(self, session_id: str) -> str:
-        return f"{self.prefix}:session:{session_id}:results"
-
     # ---------- core ingestion ----------
     async def store_result(
         self,
-        session_id: str,
         source: str,
         source_parameters: Optional[dict],
         table: pa.Table,
@@ -80,7 +76,6 @@ class ResultSetStore:
         columns_info = self._compute_column_stats(table)
         meta = ResultSetMetadata(
             result_id=result_id,
-            owner_session_id=session_id,
             source=source,
             created_at=now,
             last_accessed_at=now,
@@ -113,11 +108,6 @@ class ResultSetStore:
         meta_key = self._meta_key(result_id)
         pipe.set(meta_key, serialize_metadata(meta), ex=self.max_ttl)
 
-        # session index
-        session_key = self._session_key(session_id)
-        pipe.sadd(session_key, result_id)
-        pipe.expire(session_key, self.max_ttl)
-
         await pipe.execute()
 
         logger.info(
@@ -139,7 +129,6 @@ class ResultSetStore:
 
     async def store_result_stream(
         self,
-        session_id: str,
         source: str,
         source_parameters: Optional[dict],
         batches: AsyncGenerator[pa.RecordBatch, None],
@@ -160,44 +149,49 @@ class ResultSetStore:
         stats_accum = _IncrementalStats()
 
         pipe = self.redis.pipeline()
-        async for batch in batches:
-            if schema is None:
-                schema = batch.schema
-            total_rows += batch.num_rows
-            if total_rows > self.max_rows:
-                # Clean up already written chunks using a fresh pipeline
-                chunk_keys = [self._chunk_key(result_id, idx) for idx in range(chunk_index)]
-                if chunk_keys:
-                    await self.redis.delete(*chunk_keys)
-                raise tool_error(
-                    "RESULT_SET_TOO_LARGE",
-                    f"Row count exceeded {self.max_rows}",
-                )
+        try:
+            async for batch in batches:
+                if schema is None:
+                    schema = batch.schema
+                total_rows += batch.num_rows
+                if total_rows > self.max_rows:
+                    # Clean up already written chunks using a fresh pipeline
+                    chunk_keys = [self._chunk_key(result_id, idx) for idx in range(chunk_index)]
+                    if chunk_keys:
+                        await self.redis.delete(*chunk_keys)
+                    raise tool_error(
+                        "RESULT_SET_TOO_LARGE",
+                        f"Row count exceeded {self.max_rows}",
+                    )
 
-            # NEW: track uncompressed size
-            batch_bytes = batch.nbytes
-            total_uncompressed += batch_bytes
-            if total_uncompressed > self.max_bytes:
-                chunk_keys = [self._chunk_key(result_id, idx) for idx in range(chunk_index)]
-                if chunk_keys:
-                    await self.redis.delete(*chunk_keys)
-                raise tool_error(
-                    "RESULT_SET_TOO_LARGE",
-                    f"Uncompressed size {total_uncompressed} exceeds limit {self.max_bytes}",
-                )
+                # NEW: track uncompressed size
+                batch_bytes = batch.nbytes
+                total_uncompressed += batch_bytes
+                if total_uncompressed > self.max_bytes:
+                    chunk_keys = [self._chunk_key(result_id, idx) for idx in range(chunk_index)]
+                    if chunk_keys:
+                        await self.redis.delete(*chunk_keys)
+                    raise tool_error(
+                        "RESULT_SET_TOO_LARGE",
+                        f"Uncompressed size {total_uncompressed} exceeds limit {self.max_bytes}",
+                    )
 
-            stats_accum.update(batch)
+                stats_accum.update(batch)
 
-            chunk_key = self._chunk_key(result_id, chunk_index)
-            serialized = serialize_table(pa.Table.from_batches([batch]))
-            total_stored += len(serialized)
-            pipe.set(chunk_key, serialized, ex=staging_ttl)
-            chunk_index += 1
+                chunk_key = self._chunk_key(result_id, chunk_index)
+                serialized = serialize_table(pa.Table.from_batches([batch]))
+                total_stored += len(serialized)
+                pipe.set(chunk_key, serialized, ex=staging_ttl)
+                chunk_index += 1
 
-            # Flush pipeline periodically to avoid huge pipelines
-            if chunk_index % 10 == 0:
-                await pipe.execute()
-                pipe = self.redis.pipeline()
+                # Flush pipeline periodically to avoid huge pipelines
+                if chunk_index % 10 == 0:
+                    await pipe.execute()
+                    pipe = self.redis.pipeline()
+        except Exception:
+            # Ensure the generator is closed on error to prevent resource leaks
+            await batches.aclose()
+            raise
 
         await pipe.execute()
 
@@ -215,7 +209,6 @@ class ResultSetStore:
 
         meta = ResultSetMetadata(
             result_id=result_id,
-            owner_session_id=session_id,
             source=source,
             created_at=now,
             last_accessed_at=now,
@@ -229,13 +222,11 @@ class ResultSetStore:
             source_parameters=source_parameters,
         )
 
-        # Promote chunk TTLs (if any) and write metadata + session index
+        # Promote chunk TTLs (if any) and write metadata
         pipe = self.redis.pipeline()
         for idx in range(chunk_count):
             pipe.expire(self._chunk_key(result_id, idx), self.max_ttl)
         pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=self.max_ttl)
-        pipe.sadd(self._session_key(session_id), result_id)
-        pipe.expire(self._session_key(session_id), self.max_ttl)
         await pipe.execute()
 
         logger.info(
@@ -320,35 +311,20 @@ class ResultSetStore:
         return pa.concat_tables(tables) if tables else pa.table({})
 
     # ---------- management ----------
-    async def delete_result(self, session_id: str, result_id: str) -> bool:
+    async def delete_result(self, result_id: str) -> bool:
         meta = await self.get_metadata(result_id)
-        if not meta or meta.owner_session_id != session_id:
+        if not meta:
             return False
         pipe = self.redis.pipeline()
         pipe.delete(self._meta_key(result_id))
         for idx in range(meta.chunk_count):
             pipe.delete(self._chunk_key(result_id, idx))
-        pipe.srem(self._session_key(session_id), result_id)
         await pipe.execute()
         return True
 
-    async def list_results(self, session_id: str) -> List[ResultSetMetadata]:
-        session_key = self._session_key(session_id)
-        result_ids = await self.redis.smembers(session_key)
-        metas: List[ResultSetMetadata] = []
-        for rid in result_ids:
-            rid_str = rid.decode() if isinstance(rid, bytes) else rid
-            meta = await self.get_metadata(rid_str)
-            if meta and meta.owner_session_id == session_id:
-                metas.append(meta)
-            else:
-                # stale entry – remove from index
-                await self.redis.srem(session_key, rid_str)
-        return metas
-
     # ---------- cleanup ----------
     async def _cleanup_orphans(self) -> int:
-        """Scan Redis for result‑related keys and remove orphan chunks/session entries."""
+        """Scan Redis for result‑related keys and remove orphan chunks."""
         cursor = 0
         cleaned = 0
         pattern = f"{self.prefix}:result:*"
@@ -432,6 +408,7 @@ class _IncrementalStats:
             if name not in self._stats:
                 self._stats[name] = {
                     "null_count": 0,
+                    "non_null_count": 0,
                     "min": None,
                     "max": None,
                     "sum": 0.0,
@@ -443,6 +420,7 @@ class _IncrementalStats:
             s["null_count"] += col.null_count
 
             non_null = len(col) - col.null_count
+            s["non_null_count"] += non_null
             if non_null == 0:
                 continue
 
@@ -484,7 +462,7 @@ class _IncrementalStats:
                 name=field.name,
                 type=str(field.type),
                 null_count=s.get("null_count", 0),
-                non_null_count=(s.get("count", 0) or 0) + (s.get("null_count", 0)),  # approximated
+                non_null_count=s.get("non_null_count", 0),
                 min=s.get("min"),
                 max=s.get("max"),
                 sum=s.get("sum"),
