@@ -15,30 +15,42 @@ logger = logging.getLogger(__name__)
 
 # Fixed query – no user‑supplied table or column names.
 _CUSTOMER_QUERY = """
-SELECT
-    adress_nummer,
-    name,
-    branche,
-    ort,
-    plz,
-    land,
-    telefon,
-    email
-FROM dbo.Kunden
-WHERE name LIKE ?
-ORDER BY adress_nummer
+    SELECT
+        AdressNummer AS adress_nummer,
+        SuchName AS name_intern,
+        SuchName AS name,
+        Branche AS branche,
+        K_KundenTypNeu AS kunden_typ,
+        KundenTyp AS finale_klassifizierung,
+        K_Vertriebskanal AS vertriebskanal,
+        Kategorie AS potential_zu_kategorie,
+        Beruf AS umsatz_level_vorjahr,
+        K_VKID AS sachbearbeiter_innendiest,
+        K_VKAD AS sachbearbeiter_aussendienst,
+        K_AB AS sachbearbeiter_auftragsbearbeitung
+    FROM
+        ALPHAPLAN_EchtDaten.dbo.Adressen
+    WHERE
+        IstArchiviert = 0
+        AND AdressenID > 0
+        AND SuchName LIKE ?
+    ORDER BY AdressNummer
 """
 
 _CUSTOMER_COLUMN_DESCRIPTIONS = {
     "adress_nummer": "Unique identifier for the customer address.",
-    "name": "Customer name.",
+    "name_intern": "(Company Internal) customer name",
+    "name": "customer name",
     "branche": "Industry sector of the customer.",
-    "ort": "City of the customer address.",
-    "plz": "Postal code of the customer address.",
-    "land": "Country of the customer address.",
-    "telefon": "Phone number of the customer.",
-    "email": "Email address of the customer.",
+    "kunden_typ": "?",
+    "vertriebskanal": "?",
+    "potential_zu_kategorie": "?",
+    "umsatz_level_vorjahr": "?",
+    "sachbearbeiter_innendienst": "Unique name abbreviation of the employee responsible for internal sales",
+    "sachbearbeiter_aussendienst": "Unique name abbreviation of the employee responsible for field sales",
+    "sachbearbeiter_auftragsbearbeitung": "Unique name abbreviation of the employee responsible for order processing"
 }
+
 
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
@@ -94,7 +106,9 @@ async def fetch_customers_stream(
                         new_fields.append(field.with_metadata(metadata))
                     else:
                         new_fields.append(field)
-                batch = batch.with_schema(pa.schema(new_fields))
+                new_schema = pa.schema(new_fields)
+                columns = [batch.column(i) for i in range(batch.num_columns)]
+                batch = pa.RecordBatch.from_arrays(columns, schema=new_schema)
                 queue.put_nowait(batch)
         except Exception as e:
             logger.exception("Error fetching customers")

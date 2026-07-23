@@ -201,7 +201,18 @@ class ResultSetStore:
 
         await pipe.execute()
 
-        columns_info = stats_accum.finalize(schema)
+        # Treat an empty stream as a valid, empty result set
+        if schema is None:
+            schema = pa.schema([])
+            columns_info: List[ColumnInfo] = []
+            total_rows = 0
+            total_uncompressed = 0
+            total_stored = 0
+            chunk_count = 0
+        else:
+            columns_info = stats_accum.finalize(schema)
+            chunk_count = chunk_index
+
         meta = ResultSetMetadata(
             result_id=result_id,
             owner_session_id=session_id,
@@ -211,16 +222,16 @@ class ResultSetStore:
             absolute_expires_at=absolute_expires_at,
             row_count=total_rows,
             column_count=len(schema),
-            uncompressed_size_bytes=total_uncompressed,   # now set correctly
+            uncompressed_size_bytes=total_uncompressed,
             stored_size_bytes=total_stored,
-            chunk_count=chunk_index,
+            chunk_count=chunk_count,
             columns=columns_info,
             source_parameters=source_parameters,
         )
 
-        # Promote all chunk TTLs to max_ttl and write metadata + session index
+        # Promote chunk TTLs (if any) and write metadata + session index
         pipe = self.redis.pipeline()
-        for idx in range(chunk_index):
+        for idx in range(chunk_count):
             pipe.expire(self._chunk_key(result_id, idx), self.max_ttl)
         pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=self.max_ttl)
         pipe.sadd(self._session_key(session_id), result_id)
@@ -229,12 +240,12 @@ class ResultSetStore:
 
         logger.info(
             "Stream-stored result set %s: %d rows, %d chunks, %d bytes",
-            result_id, total_rows, chunk_index, total_stored,
+            result_id, total_rows, chunk_count, total_stored,
         )
 
         # Build summary with only name, type, null_count (as per agent.md)
         summary_columns = [
-            ColumnInfo(name=c.name, type=c.type, null_count=c.null_count)
+            ColumnInfo(name=c.name, type=c.type, null_count=c.null_count, non_null_count=c.non_null_count)
             for c in columns_info
         ]
         return ResultSetSummary(
@@ -431,7 +442,7 @@ class _IncrementalStats:
             s = self._stats[name]
             s["null_count"] += col.null_count
 
-            non_null = col.num_rows - col.null_count
+            non_null = len(col) - col.null_count
             if non_null == 0:
                 continue
 

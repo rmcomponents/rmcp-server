@@ -5,7 +5,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastmcp import FastMCP
-from py_key_value_aio.redis import RedisStore
+from key_value.aio.stores.redis import RedisStore
 from redis.asyncio import Redis
 from .config import settings
 from .result_store import ResultSetStore
@@ -18,7 +18,7 @@ store = RedisStore(url=settings.REDIS_URL)
 async def cleanup_loop(app, interval_seconds=300):
     while True:
         try:
-            await app.state.result_store.run_cleanup()
+            await app.result_store.run_cleanup()
         except Exception as e:
             logger.warning("Cleanup task failed: %s", e)
         await asyncio.sleep(interval_seconds)
@@ -26,11 +26,11 @@ async def cleanup_loop(app, interval_seconds=300):
 
 @asynccontextmanager
 async def lifespan(app):
-    app.state.redis = Redis.from_url(settings.REDIS_URL, decode_responses=False)
-    app.state.result_store = ResultSetStore(app.state.redis, settings)
+    app.redis = Redis.from_url(settings.REDIS_URL, decode_responses=False)
+    app.result_store = ResultSetStore(app.redis, settings)
     cleanup_task = asyncio.create_task(cleanup_loop(app))
     try:
-        await app.state.redis.ping()
+        await app.redis.ping()
         logger.info("Connected to Redis")
     except Exception as e:
         logger.error(f"Failed to connect to Redis: {e}")
@@ -41,14 +41,29 @@ async def lifespan(app):
         await cleanup_task
     except asyncio.CancelledError:
         pass
-    await app.state.redis.close()
+    await app.redis.close()
     logger.info("Redis connection closed")
 
 mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan, session_state_store=store)
 
+# Register tools
+mcp.tool()(customers.list_customers)
+
+mcp.tool()(result_sets.get_result_info)
+mcp.tool()(result_sets.list_result_sets)
+mcp.tool()(result_sets.explain_columns)
+mcp.tool()(result_sets.list_rows)
+mcp.tool()(result_sets.count_rows)
+mcp.tool()(result_sets.query_rows)
+mcp.tool()(result_sets.distinct_values)
+mcp.tool()(result_sets.aggregate)
+mcp.tool()(result_sets.group_by)
+mcp.tool()(result_sets.histogram)
+mcp.tool()(result_sets.delete_result_set)
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
-    redis = request.app.state.redis
+    redis = request.app.redis
     try:
         await redis.ping()
         return {"status": "healthy", "redis": "ok"}

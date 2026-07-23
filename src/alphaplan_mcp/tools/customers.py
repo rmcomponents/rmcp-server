@@ -22,8 +22,7 @@ async def list_customers(
     Fetch all matching customers, store as a result set, and return a summary.
     No rows are returned to the model.
     """
-    app = ctx.request_context.app
-    store: ResultSetStore = app.state.result_store
+    store: ResultSetStore = ctx.fastmcp.result_store
     session_id = ctx.session_id
 
     logger.info("list_customers called with customer_name=%s", customer_name)

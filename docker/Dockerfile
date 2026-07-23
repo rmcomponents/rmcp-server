@@ -10,12 +10,19 @@ RUN apt-get update && apt-get install -y curl gnupg apt-transport-https \
 
 WORKDIR /app
 
-# Copy project files
-COPY src/pyproject.toml src/README.md ./src/
-COPY src/alphaplan_mcp ./src/alphaplan_mcp
+# 1) Create a minimal package skeleton so pip can install dependencies
+#    without the real source being present yet.
+RUN mkdir -p alphaplan_mcp && echo '__version__ = "0.0.0"' > alphaplan_mcp/__init__.py
 
-# Install the project
-RUN pip install --no-cache-dir ./src
+COPY pyproject.toml ./
+COPY src/README.md ./README.md
+RUN pip install --no-cache-dir .
+
+# 2) Overwrite the skeleton with the real application source
+COPY src/alphaplan_mcp ./alphaplan_mcp
+
+# 3) Re‑install (dependencies are already cached, only the package is rebuilt)
+RUN pip install --no-cache-dir .
 
 # Run as non-root user
 RUN useradd -m appuser

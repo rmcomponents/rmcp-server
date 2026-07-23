@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 async def get_result_info(result_id: str, ctx: Context):
     """Return metadata and summary for a stored result set."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.get_result_info(result_id)
     except ToolError as e:
@@ -32,7 +32,7 @@ async def get_result_info(result_id: str, ctx: Context):
 async def list_result_sets(ctx: Context):
     """List all result sets owned by the current session."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.list_result_sets()
     except ToolError as e:
@@ -50,7 +50,7 @@ async def explain_columns(
 ):
     """Return per‑column statistics, optionally with examples."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.explain_columns(result_id, columns, include_examples)
     except ToolError as e:
@@ -70,7 +70,7 @@ async def list_rows(
 ):
     """Return a subset of rows from a stored result set."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.list_rows(result_id, columns, limit, offset, sort)
     except ToolError as e:
@@ -87,7 +87,7 @@ async def count_rows(
 ):
     """Return the number of rows matching optional filters."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.count_rows(result_id, filters)
     except ToolError as e:
@@ -96,8 +96,6 @@ async def count_rows(
         logger.exception("count_rows failed")
         return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
 
-
-# ---------- New tools (Phase 6) ----------
 
 async def query_rows(
     result_id: str,
@@ -110,7 +108,7 @@ async def query_rows(
 ):
     """Return rows matching structured filters, with optional sorting and projection."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.query_rows(result_id, filters, columns, sort, limit, offset)
     except ToolError as e:
@@ -133,7 +131,7 @@ async def distinct_values(
 ):
     """Return distinct values for a column, with optional counts and ordering."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.distinct_values(
             result_id, column, filters, limit, offset, include_counts, order, include_null
@@ -153,7 +151,7 @@ async def aggregate(
 ):
     """Compute aggregations over the result set (or a filtered subset)."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.aggregate(result_id, aggregations, filters)
     except ToolError as e:
@@ -175,7 +173,7 @@ async def group_by(
 ):
     """Group rows and compute aggregations per group."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.group_by(
             result_id, group_columns, aggregations, filters, sort, limit, offset
@@ -196,7 +194,7 @@ async def histogram(
 ):
     """Compute a histogram for a numeric or date column."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.histogram(result_id, column, bins, filters)
     except ToolError as e:
@@ -212,7 +210,7 @@ async def delete_result_set(
 ):
     """Delete a stored result set owned by the current session."""
     try:
-        store: ResultSetStore = ctx.request_context.app.state.result_store
+        store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.delete_result_set(result_id)
     except ToolError as e:

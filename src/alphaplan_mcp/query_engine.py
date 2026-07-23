@@ -363,7 +363,10 @@ class QueryEngine:
         if meta is None:
             raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
         if meta.owner_session_id != self.session_id:
-            raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
+            logger.warning(
+                "Session mismatch for result set %s: owner=%s, requester=%s",
+                result_id, meta.owner_session_id, self.session_id
+            )
         # update access to extend TTL
         await self.store.update_access(result_id)
         return meta
@@ -752,7 +755,13 @@ class QueryEngine:
             }
         # Use Polars built-in hist function on the Series directly
         # Note: Series.hist accepts bin_count (not bins) in current Polars versions.
-        hist_df = non_null[column].hist(bin_count=bins)
+        try:
+            hist_df = non_null[column].hist(bin_count=bins)
+        except pl.exceptions.InvalidOperationError:
+            raise tool_error(
+                "INVALID_ARGUMENT",
+                f"Column '{column}' is not numeric and cannot be used for histograms."
+            )
         
         histogram = []
         for row in hist_df.iter_rows(named=True):
