@@ -7,7 +7,7 @@ import pytest_asyncio
 
 from alphaplan_mcp.config import Settings
 from alphaplan_mcp.errors import ToolError
-from alphaplan_mcp.models import FilterClause, FilterGroup, SortSpec, AggregationSpec, ResultSetSummary, ResultProvenance
+from alphaplan_mcp.models import FilterClause, FilterGroup, SortSpec, AggregationSpec, ResultSetSummary, ResultProvenance, ColumnOrigin
 from alphaplan_mcp.query_engine import _build_filter_expr, _apply_sort, _df_to_rows, QueryEngine
 from alphaplan_mcp.result_store import ResultSetStore
 
@@ -257,3 +257,265 @@ class TestQueryEngine:
         assert isinstance(res, ResultSetSummary)
         assert res.row_count == 4
         assert res.column_count == 1
+
+    # ---------- Provenance Persistence Tests ----------
+    @pytest.mark.asyncio
+    async def test_group_by_provenance(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(result_id, group_columns=["active"], aggregations=aggs, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.provenance.op == "group_by"
+        assert meta.provenance.parent == result_id
+        assert meta.source is not None
+        assert meta.source["op"] == "group_by"
+        assert meta.grain == "one row per (active)"
+        assert meta.source_row_count == 6
+
+        # Check column provenance
+        active_col = next(c for c in meta.columns if c.name == "active")
+        assert active_col.origin == ColumnOrigin.group_key
+        assert active_col.source_column == "active"
+
+        count_col = next(c for c in meta.columns if c.name == "count")
+        assert count_col.origin == ColumnOrigin.aggregate
+        assert count_col.operation == "count"
+
+    @pytest.mark.asyncio
+    async def test_aggregate_provenance(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="sum", column="value", alias="total_value")]
+        res = await engine.aggregate(result_id, aggregations=aggs, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.provenance.op == "aggregate"
+        assert meta.provenance.parent == result_id
+        assert meta.source is not None
+        assert meta.source["op"] == "aggregate"
+        assert meta.grain == "single row"
+
+        total_col = next(c for c in meta.columns if c.name == "total_value")
+        assert total_col.origin == ColumnOrigin.aggregate
+        assert total_col.operation == "sum"
+        assert total_col.source_column == "value"
+
+    @pytest.mark.asyncio
+    async def test_distinct_values_provenance(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.distinct_values(result_id, column="name", store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.provenance.op == "distinct_values"
+        assert meta.provenance.parent == result_id
+        assert meta.source is not None
+        assert meta.source["op"] == "distinct_values"
+        assert meta.grain == "one row per distinct name"
+
+        name_col = next(c for c in meta.columns if c.name == "name")
+        assert name_col.origin == ColumnOrigin.passthrough
+        assert name_col.source_column == "name"
+
+        count_col = next(c for c in meta.columns if c.name == "count")
+        assert count_col.origin == ColumnOrigin.derived
+
+    @pytest.mark.asyncio
+    async def test_histogram_provenance(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.histogram(result_id, column="value", bins=2, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.provenance.op == "histogram"
+        assert meta.provenance.parent == result_id
+        assert meta.source is not None
+        assert meta.source["op"] == "histogram"
+        assert meta.grain == "one row per histogram bin for value"
+
+        bin_lower_col = next(c for c in meta.columns if c.name == "bin_lower")
+        assert bin_lower_col.origin == ColumnOrigin.derived
+
+        count_col = next(c for c in meta.columns if c.name == "count")
+        assert count_col.origin == ColumnOrigin.derived
+
+    # ---------- Alias Validation Tests ----------
+    @pytest.mark.asyncio
+    async def test_group_by_invalid_alias(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="sum", column="value", alias="invalid-alias")]
+        with pytest.raises(ToolError, match="Invalid alias"):
+            await engine.group_by(result_id, group_columns=["active"], aggregations=aggs)
+
+    @pytest.mark.asyncio
+    async def test_group_by_alias_collision(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="sum", column="value", alias="active")]
+        with pytest.raises(ToolError, match="collides"):
+            await engine.group_by(result_id, group_columns=["active"], aggregations=aggs)
+
+    @pytest.mark.asyncio
+    async def test_aggregate_invalid_alias(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="sum", column="value", alias="123invalid")]
+        with pytest.raises(ToolError, match="Invalid alias"):
+            await engine.aggregate(result_id, aggregations=aggs)
+
+    # ---------- Column Naming Rules Tests ----------
+    @pytest.mark.asyncio
+    async def test_distinct_values_column_names(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.distinct_values(result_id, column="name", store_result=True)
+        meta = await engine.store.get_metadata(res.result_id)
+        column_names = [c.name for c in meta.columns]
+        assert "name" in column_names
+        assert "count" in column_names
+
+    @pytest.mark.asyncio
+    async def test_histogram_numeric_column_names(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.histogram(result_id, column="value", bins=2, store_result=True)
+        meta = await engine.store.get_metadata(res.result_id)
+        column_names = [c.name for c in meta.columns]
+        assert "bin_index" in column_names
+        assert "bin_lower" in column_names
+        assert "bin_upper" in column_names
+        assert "bin_label" in column_names
+        assert "count" in column_names
+
+    # ---------- Type and Description Inheritance Tests ----------
+    @pytest.mark.asyncio
+    async def test_passthrough_type_inheritance(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.query_rows(result_id, store_result=True)
+        meta = await engine.store.get_metadata(res.result_id)
+        for col in meta.columns:
+            if col.origin == ColumnOrigin.passthrough:
+                parent_meta = await engine.store.get_metadata(result_id)
+                parent_col = next((c for c in parent_meta.columns if c.name == col.source_column), None)
+                if parent_col:
+                    assert col.type == parent_col.type
+
+    @pytest.mark.asyncio
+    async def test_aggregate_type_inference(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="avg", column="value", alias="avg_value")]
+        res = await engine.aggregate(result_id, aggregations=aggs, store_result=True)
+        meta = await engine.store.get_metadata(res.result_id)
+        avg_col = next(c for c in meta.columns if c.name == "avg_value")
+        assert avg_col.type == "float64"
+
+    @pytest.mark.asyncio
+    async def test_description_generation(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(result_id, group_columns=["active"], aggregations=aggs, store_result=True)
+        meta = await engine.store.get_metadata(res.result_id)
+        count_col = next(c for c in meta.columns if c.name == "count")
+        assert count_col.description is not None
+        assert "count" in count_col.description.lower()
+
+    # ---------- get_result_info and explain_columns Tests ----------
+    @pytest.mark.asyncio
+    async def test_get_result_info_exposes_provenance(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(result_id, group_columns=["active"], aggregations=aggs, store_result=True)
+        info = await engine.get_result_info(res.result_id)
+        assert info["provenance"]["op"] == "group_by"
+        assert info["source"] is not None
+        assert info["grain"] == "one row per (active)"
+        assert info["source_row_count"] == 6
+
+    @pytest.mark.asyncio
+    async def test_explain_columns_exposes_provenance(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(result_id, group_columns=["active"], aggregations=aggs, store_result=True)
+        info = await engine.explain_columns(res.result_id)
+        assert info["grain"] == "one row per (active)"
+        assert info["source_row_count"] == 6
+        count_col = next(c for c in info["columns"] if c["name"] == "count")
+        assert count_col["description"] is not None
+
+    # ---------- Chaining Tests ----------
+    @pytest.mark.asyncio
+    async def test_chaining_query_rows_on_group_by(self, setup_engine):
+        engine, result_id = setup_engine
+        # First, create a group_by result
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        group_res = await engine.group_by(result_id, group_columns=["active"], aggregations=aggs, store_result=True)
+        # Then, filter on the group_by result
+        filters = FilterGroup(clauses=[FilterClause(column="count", operator="gt", value=1)])
+        res = await engine.query_rows(group_res.result_id, filters=filters, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.provenance.op == "query_rows"
+        assert meta.provenance.parent == group_res.result_id
+
+    @pytest.mark.asyncio
+    async def test_chaining_group_by_on_distinct_values(self, setup_engine):
+        engine, result_id = setup_engine
+        # First, create a distinct_values result
+        distinct_res = await engine.distinct_values(result_id, column="name", store_result=True)
+        # Then, group_by on the distinct_values result
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(distinct_res.result_id, group_columns=["name"], aggregations=aggs, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.provenance.op == "group_by"
+        assert meta.provenance.parent == distinct_res.result_id
+
+    # ---------- result_label Tests ----------
+    @pytest.mark.asyncio
+    async def test_group_by_with_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(
+            result_id, group_columns=["active"], aggregations=aggs, 
+            store_result=True, result_label="Active counts"
+        )
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.result_label == "Active counts"
+
+    @pytest.mark.asyncio
+    async def test_aggregate_with_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="sum", column="value", alias="total_value")]
+        res = await engine.aggregate(
+            result_id, aggregations=aggs, 
+            store_result=True, result_label="Total value"
+        )
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.result_label == "Total value"
+
+    @pytest.mark.asyncio
+    async def test_distinct_values_with_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.distinct_values(
+            result_id, column="name", store_result=True, result_label="Unique names"
+        )
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.result_label == "Unique names"
+
+    @pytest.mark.asyncio
+    async def test_histogram_with_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.histogram(
+            result_id, column="value", bins=2, store_result=True, result_label="Value distribution"
+        )
+        assert isinstance(res, ResultSetSummary)
+        meta = await engine.store.get_metadata(res.result_id)
+        assert meta.result_label == "Value distribution"
+
+    @pytest.mark.asyncio
+    async def test_get_result_info_exposes_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(
+            result_id, group_columns=["active"], aggregations=aggs, 
+            store_result=True, result_label="Active counts"
+        )
+        info = await engine.get_result_info(res.result_id)
+        assert info["result_label"] == "Active counts"
