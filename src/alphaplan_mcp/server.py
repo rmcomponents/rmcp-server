@@ -27,7 +27,15 @@ async def cleanup_loop(app, interval_seconds=300):
 @asynccontextmanager
 async def lifespan(app):
     app.redis = Redis.from_url(settings.REDIS_URL, decode_responses=False)
-    app.result_store = ResultSetStore(app.redis, settings)
+    app.result_store = ResultSetStore(
+        redis=app.redis,
+        prefix=settings.REDIS_KEY_PREFIX,
+        chunk_rows=settings.RESULTSET_CHUNK_ROWS,
+        idle_ttl=settings.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings.RESULTSET_MAX_ROWS,
+        max_bytes=settings.RESULTSET_MAX_BYTES,
+    )
     cleanup_task = asyncio.create_task(cleanup_loop(app))
     try:
         await app.redis.ping()

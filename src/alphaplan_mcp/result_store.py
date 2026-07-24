@@ -328,14 +328,20 @@ class ResultSetStore:
         cursor = 0
         cleaned = 0
         pattern = f"{self.prefix}:result:*"
+        # The prefix might contain colons, so we cannot simply split the key and guess the index.
+        # We remove the known prefix to safely extract the result_id.
+        prefix_len = len(self.prefix) + len(":result:")
         while True:
             cursor, keys = await self.redis.scan(cursor=cursor, match=pattern, count=100)
             for key in keys:
                 key_str = key.decode() if isinstance(key, bytes) else key
-                parts = key_str.split(":")
-                if len(parts) < 4:
+                # e.g., "alphaplan:mcp:result:rs_12345:meta" -> "rs_12345:meta"
+                remainder = key_str[prefix_len:]
+                parts = remainder.split(":")
+                if not parts:
                     continue
-                result_id = parts[2]
+                result_id = parts[0]
+                
                 # If metadata does not exist, delete this key (could be orphan chunk)
                 meta_key = self._meta_key(result_id)
                 if not await self.redis.exists(meta_key):
