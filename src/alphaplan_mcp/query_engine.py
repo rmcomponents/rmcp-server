@@ -667,7 +667,9 @@ class QueryEngine:
         include_counts: bool = True,
         order: str = "count_desc",
         include_null: bool = False,
-    ) -> Dict[str, Any]:
+        store_result: bool = False,
+        result_label: Optional[str] = None,
+    ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit = min(limit, self.settings.TOOL_MAX_DISTINCT_VALUES)
         meta = await self._ensure_owned(result_id)
         df = await self._load_full_df(result_id, columns=[column])
@@ -692,6 +694,20 @@ class QueryEngine:
             value_counts = value_counts.sort(column, descending=True)
         else:
             raise tool_error("INVALID_ARGUMENT", f"Unsupported order '{order}'.")
+
+        if store_result:
+            return await self._store_result_from_df(
+                value_counts,
+                provenance=ResultProvenance(
+                    op="distinct_values",
+                    parent=result_id,
+                    parameters={
+                        "column": column,
+                        "filters": filters.model_dump() if filters else None,
+                    },
+                ),
+            )
+
         total_distinct = value_counts.height
         value_counts_slice = value_counts.slice(offset, limit)
         values = []
@@ -717,7 +733,9 @@ class QueryEngine:
         result_id: str,
         aggregations: List[AggregationSpec],
         filters: Optional[FilterGroup] = None,
-    ) -> Dict[str, Any]:
+        store_result: bool = False,
+        result_label: Optional[str] = None,
+    ) -> Union[Dict[str, Any], ResultSetSummary]:
         meta = await self._ensure_owned(result_id)
         # Determine needed columns
         needed_cols = set()
@@ -732,6 +750,20 @@ class QueryEngine:
         # Build aggregation expressions
         agg_exprs = _build_agg_exprs(aggregations)
         result_df = df.select(agg_exprs)
+
+        if store_result:
+            return await self._store_result_from_df(
+                result_df,
+                provenance=ResultProvenance(
+                    op="aggregate",
+                    parent=result_id,
+                    parameters={
+                        "aggregations": [a.model_dump() for a in aggregations],
+                        "filters": filters.model_dump() if filters else None,
+                    },
+                ),
+            )
+
         row = result_df.to_dicts()[0]
         normalized = {k: _normalize_value(v) for k, v in row.items()}
         return {"result_id": result_id, "aggregations": normalized}
@@ -745,7 +777,9 @@ class QueryEngine:
         sort: Optional[List[SortSpec]] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> Dict[str, Any]:
+        store_result: bool = False,
+        result_label: Optional[str] = None,
+    ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
         if len(group_columns) > self.settings.TOOL_MAX_GROUP_COLUMNS:
             raise tool_error("INVALID_ARGUMENT", f"Too many group columns (max {self.settings.TOOL_MAX_GROUP_COLUMNS}).")
@@ -773,6 +807,22 @@ class QueryEngine:
         total_groups = grouped.height
         if sort:
             grouped = _apply_sort(grouped, sort)
+
+        if store_result:
+            return await self._store_result_from_df(
+                grouped,
+                provenance=ResultProvenance(
+                    op="group_by",
+                    parent=result_id,
+                    parameters={
+                        "group_columns": group_columns,
+                        "aggregations": [a.model_dump() for a in aggregations],
+                        "filters": filters.model_dump() if filters else None,
+                        "sort": [s.model_dump() for s in sort] if sort else None,
+                    },
+                ),
+            )
+
         grouped_slice = grouped.slice(offset, limit)
         rows = _df_to_rows(grouped_slice)
         has_more = offset + limit < total_groups
@@ -795,7 +845,9 @@ class QueryEngine:
         column: str,
         bins: int = 10,
         filters: Optional[FilterGroup] = None,
-    ) -> Dict[str, Any]:
+        store_result: bool = False,
+        result_label: Optional[str] = None,
+    ) -> Union[Dict[str, Any], ResultSetSummary]:
         bins = min(bins, 50)
         meta = await self._ensure_owned(result_id)
         df = await self._load_full_df(result_id, columns=[column])
@@ -808,6 +860,20 @@ class QueryEngine:
         null_count = df.height - non_null.height
         
         if non_null.height == 0:
+            if store_result:
+                empty_df = pl.DataFrame({column: [], "count": []})
+                return await self._store_result_from_df(
+                    empty_df,
+                    provenance=ResultProvenance(
+                        op="histogram",
+                        parent=result_id,
+                        parameters={
+                            "column": column,
+                            "bins": bins,
+                            "filters": filters.model_dump() if filters else None,
+                        },
+                    ),
+                )
             return {
                 "result_id": result_id,
                 "column": column,
@@ -824,6 +890,20 @@ class QueryEngine:
             value_counts = non_null.group_by(column).agg(pl.len().alias("count"))
             value_counts = value_counts.sort("count", descending=True)
             
+            if store_result:
+                return await self._store_result_from_df(
+                    value_counts,
+                    provenance=ResultProvenance(
+                        op="histogram",
+                        parent=result_id,
+                        parameters={
+                            "column": column,
+                            "bins": bins,
+                            "filters": filters.model_dump() if filters else None,
+                        },
+                    ),
+                )
+
             total_distinct = value_counts.height
             top_values = value_counts.slice(0, max_bins)
             
@@ -852,6 +932,20 @@ class QueryEngine:
             col_min = non_null[column].min()
             col_max = non_null[column].max()
             if col_min is None or col_max is None:
+                if store_result:
+                    empty_df = pl.DataFrame({column: [], "count": []})
+                    return await self._store_result_from_df(
+                        empty_df,
+                        provenance=ResultProvenance(
+                            op="histogram",
+                            parent=result_id,
+                            parameters={
+                                "column": column,
+                                "bins": bins,
+                                "filters": filters.model_dump() if filters else None,
+                            },
+                        ),
+                    )
                 return {
                     "result_id": result_id,
                     "column": column,
@@ -867,6 +961,20 @@ class QueryEngine:
                     f"Column '{column}' is not numeric and cannot be used for histograms."
                 )
             
+            if store_result:
+                return await self._store_result_from_df(
+                    hist_df,
+                    provenance=ResultProvenance(
+                        op="histogram",
+                        parent=result_id,
+                        parameters={
+                            "column": column,
+                            "bins": bins,
+                            "filters": filters.model_dump() if filters else None,
+                        },
+                    ),
+                )
+
             histogram = []
             for row in hist_df.iter_rows(named=True):
                 histogram.append({
