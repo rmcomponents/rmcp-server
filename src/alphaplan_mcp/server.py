@@ -5,15 +5,12 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastmcp import FastMCP
-from key_value.aio.stores.redis import RedisStore
 from redis.asyncio import Redis
 from .config import settings
 from .result_store import ResultSetStore
 from .tools import customers, parts, result_sets
 
 logger = logging.getLogger(__name__)
-
-store = RedisStore(url=settings.REDIS_URL)
 
 async def cleanup_loop(app, interval_seconds=300):
     while True:
@@ -52,7 +49,6 @@ async def lifespan(app):
     await app.redis.close()
     logger.info("Redis connection closed")
 
-# mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan, session_state_store=store)
 mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan)
 
 # Register tools
@@ -80,4 +76,4 @@ async def health_check(request):
         return {"status": "unhealthy", "redis": str(e)}, 503
 
 def main():
-    mcp.run(transport="http", host=settings.MCP_HOST, port=settings.MCP_PORT, stateless_http=True)
+    mcp.run(transport="http", host=settings.MCP_HOST, port=settings.MCP_PORT)

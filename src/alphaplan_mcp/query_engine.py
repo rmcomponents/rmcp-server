@@ -362,8 +362,6 @@ class QueryEngine:
         meta = await self.store.get_metadata(result_id)
         if meta is None:
             raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
-        if meta.owner_session_id != self.session_id:
-            raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
         # update access to extend TTL
         await self.store.update_access(result_id)
         return meta

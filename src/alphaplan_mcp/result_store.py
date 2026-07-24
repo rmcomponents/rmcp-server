@@ -338,8 +338,6 @@ class ResultSetStore:
         meta = await self.get_metadata(result_id)
         if not meta:
             return False
-        if meta.owner_session_id != session_id:
-            return False
         pipe = self.redis.pipeline()
         pipe.delete(self._meta_key(result_id))
         for idx in range(meta.chunk_count):
