@@ -457,11 +457,17 @@ class QueryEngine:
         if col_info.origin == ColumnOrigin.group_key:
             return f"{op} group key: {col_info.source_column}"
         elif col_info.origin == ColumnOrigin.aggregate:
+            if col_info.operation == "count" and col_info.source_column is None:
+                if op == "aggregate":
+                    return f"{op} aggregation: total row count"
+                return f"{op} aggregation: count of rows"
             return f"{op} aggregation: {col_info.operation} of {col_info.source_column}"
         elif col_info.origin == ColumnOrigin.derived:
             return f"{op} derived: {col_info.name}"
         elif col_info.origin == ColumnOrigin.passthrough:
-            return f"{op} passthrough: {col_info.source_column}"
+            if col_info.source_column:
+                return f"{op} passthrough: {col_info.source_column}"
+            return None
         return None
 
     async def get_result_info(self, result_id: str) -> Dict[str, Any]:
@@ -702,7 +708,9 @@ class QueryEngine:
             for clause in filters.clauses:
                 needed_cols.add(clause.column)
 
-        df = await self._load_full_df(result_id, columns=list(needed_cols) if needed_cols else None)
+        # If columns is None, we need to load all columns for projection
+        load_cols = list(needed_cols) if columns else None
+        df = await self._load_full_df(result_id, columns=load_cols)
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
             mask = _build_filter_expr(filters, schema)

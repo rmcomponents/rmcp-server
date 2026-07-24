@@ -165,8 +165,7 @@ class ResultSetStore:
             stored_size_bytes=total_stored,
             created_at=now,
             expires_at=absolute_expires_at,
-            columns=[ColumnInfo(name=c.name, type=c.type, null_count=c.null_count, non_null_count=c.non_null_count)
-                     for c in columns_info],
+            columns=columns_info,
         )
 
     async def store_result_stream(
@@ -314,11 +313,6 @@ class ResultSetStore:
             result_id, total_rows, chunk_count, total_stored,
         )
 
-        # Build summary with only name, type, null_count (as per agent.md)
-        summary_columns = [
-            ColumnInfo(name=c.name, type=c.type, null_count=c.null_count, non_null_count=c.non_null_count)
-            for c in columns_info
-        ]
         return ResultSetSummary(
             result_id=result_id,
             owner_session_id=session_id,
@@ -332,7 +326,7 @@ class ResultSetStore:
             stored_size_bytes=total_stored,
             created_at=now,
             expires_at=absolute_expires_at,
-            columns=summary_columns,
+            columns=columns_info,
         )
 
     # ---------- retrieval ----------
@@ -494,7 +488,9 @@ class ResultSetStore:
                 min_len = pc.min(lengths).as_py()
                 max_len = pc.max(lengths).as_py()
 
-            description = field.metadata.get(b"description", b"").decode("utf-8") if field.metadata else ""
+            description = field.metadata.get(b"description", b"").decode("utf-8") if field.metadata else None
+            if not description:
+                description = None
             infos.append(ColumnInfo(
                 name=field.name,
                 type=str(col.type),
@@ -574,7 +570,9 @@ class _IncrementalStats:
             avg = None
             if s.get("count", 0) > 0 and s.get("sum") is not None:
                 avg = s["sum"] / s["count"]
-            description = field.metadata.get(b"description", b"").decode("utf-8") if field.metadata else ""
+            description = field.metadata.get(b"description", b"").decode("utf-8") if field.metadata else None
+            if not description:
+                description = None
             infos.append(ColumnInfo(
                 name=field.name,
                 type=str(field.type),
