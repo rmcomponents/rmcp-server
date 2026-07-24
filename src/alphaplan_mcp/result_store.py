@@ -47,9 +47,13 @@ class ResultSetStore:
     def _chunk_key(self, result_id: str, chunk_index: int) -> str:
         return f"{self._result_key(result_id)}:chunk:{chunk_index:06d}"
 
+    def _session_key(self, session_id: str) -> str:
+        return f"{self.prefix}:session:{session_id}:results"
+
     # ---------- core ingestion ----------
     async def store_result(
         self,
+        session_id: str,
         source: str,
         source_parameters: Optional[dict],
         table: pa.Table,
@@ -68,14 +72,18 @@ class ResultSetStore:
         # split into chunks
         total_rows = table.num_rows
         chunks = []
-        for start in range(0, total_rows, self.chunk_rows):
-            end = min(start + self.chunk_rows, total_rows)
-            chunks.append(table.slice(start, end - start))
+        if total_rows == 0:
+            chunks.append(table)
+        else:
+            for start in range(0, total_rows, self.chunk_rows):
+                end = min(start + self.chunk_rows, total_rows)
+                chunks.append(table.slice(start, end - start))
 
         # compute column stats and metadata
         columns_info = self._compute_column_stats(table)
         meta = ResultSetMetadata(
             result_id=result_id,
+            owner_session_id=session_id,
             source=source,
             created_at=now,
             last_accessed_at=now,
@@ -107,6 +115,8 @@ class ResultSetStore:
         meta.stored_size_bytes = total_stored
         meta_key = self._meta_key(result_id)
         pipe.set(meta_key, serialize_metadata(meta), ex=self.max_ttl)
+        pipe.sadd(self._session_key(session_id), result_id)
+        pipe.expire(self._session_key(session_id), self.max_ttl)
 
         await pipe.execute()
 
@@ -117,6 +127,7 @@ class ResultSetStore:
 
         return ResultSetSummary(
             result_id=result_id,
+            owner_session_id=session_id,
             source=source,
             row_count=total_rows,
             column_count=len(table.schema),
@@ -129,6 +140,7 @@ class ResultSetStore:
 
     async def store_result_stream(
         self,
+        session_id: str,
         source: str,
         source_parameters: Optional[dict],
         batches: AsyncGenerator[pa.RecordBatch, None],
@@ -207,8 +219,16 @@ class ResultSetStore:
             columns_info = stats_accum.finalize(schema)
             chunk_count = chunk_index
 
+        if chunk_count == 0:
+            chunk_key = self._chunk_key(result_id, 0)
+            serialized = serialize_table(pa.Table.from_batches([], schema=schema))
+            total_stored += len(serialized)
+            pipe.set(chunk_key, serialized, ex=self.max_ttl)
+            chunk_count = 1
+
         meta = ResultSetMetadata(
             result_id=result_id,
+            owner_session_id=session_id,
             source=source,
             created_at=now,
             last_accessed_at=now,
@@ -227,6 +247,8 @@ class ResultSetStore:
         for idx in range(chunk_count):
             pipe.expire(self._chunk_key(result_id, idx), self.max_ttl)
         pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=self.max_ttl)
+        pipe.sadd(self._session_key(session_id), result_id)
+        pipe.expire(self._session_key(session_id), self.max_ttl)
         await pipe.execute()
 
         logger.info(
@@ -241,6 +263,7 @@ class ResultSetStore:
         ]
         return ResultSetSummary(
             result_id=result_id,
+            owner_session_id=session_id,
             source=source,
             row_count=total_rows,
             column_count=len(schema),
@@ -311,16 +334,44 @@ class ResultSetStore:
         return pa.concat_tables(tables) if tables else pa.table({})
 
     # ---------- management ----------
-    async def delete_result(self, result_id: str) -> bool:
+    async def delete_result(self, session_id: str, result_id: str) -> bool:
         meta = await self.get_metadata(result_id)
         if not meta:
+            return False
+        if meta.owner_session_id != session_id:
             return False
         pipe = self.redis.pipeline()
         pipe.delete(self._meta_key(result_id))
         for idx in range(meta.chunk_count):
             pipe.delete(self._chunk_key(result_id, idx))
+        pipe.srem(self._session_key(session_id), result_id)
         await pipe.execute()
         return True
+
+    # ---------- session management ----------
+    async def list_results(self, session_id: str) -> List[ResultSetSummary]:
+        result_ids = await self.redis.smembers(self._session_key(session_id))
+        summaries = []
+        for rid in result_ids:
+            if isinstance(rid, bytes):
+                rid = rid.decode()
+            meta = await self.get_metadata(rid)
+            if meta:
+                summaries.append(ResultSetSummary(
+                    result_id=meta.result_id,
+                    owner_session_id=meta.owner_session_id,
+                    source=meta.source,
+                    row_count=meta.row_count,
+                    column_count=meta.column_count,
+                    stored_size_bytes=meta.stored_size_bytes,
+                    created_at=meta.created_at,
+                    expires_at=meta.absolute_expires_at,
+                    columns=meta.columns,
+                ))
+            else:
+                # Lazily clean up stale IDs
+                await self.redis.srem(self._session_key(session_id), rid)
+        return summaries
 
     # ---------- cleanup ----------
     async def _cleanup_orphans(self) -> int:

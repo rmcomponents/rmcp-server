@@ -33,6 +33,7 @@ async def list_customers(
 
     try:
         summary = await store.store_result_stream(
+            session_id=ctx.session_id,
             source="customers",
             source_parameters={"customer_name": customer_name},
             batches=fetch_customers_stream(customer_name),

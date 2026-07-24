@@ -23,6 +23,7 @@ class ColumnInfo(BaseModel):
 
 class ResultSetMetadata(BaseModel):
     result_id: str
+    owner_session_id: str
     source: str
     created_at: datetime
     last_accessed_at: datetime
@@ -37,6 +38,7 @@ class ResultSetMetadata(BaseModel):
 
 class ResultSetSummary(BaseModel):
     result_id: str
+    owner_session_id: str
     source: str
     row_count: int
     column_count: int

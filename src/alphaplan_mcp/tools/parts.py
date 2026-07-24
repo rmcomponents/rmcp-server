@@ -41,6 +41,7 @@ async def list_parts(
 
     try:
         summary = await store.store_result_stream(
+            session_id=ctx.session_id,
             source="parts",
             source_parameters={
                 "positive_filter_term": positive_filter_term,

@@ -7,7 +7,7 @@ import pytest_asyncio
 
 from alphaplan_mcp.config import Settings
 from alphaplan_mcp.errors import ToolError
-from alphaplan_mcp.models import FilterClause, FilterGroup, SortSpec, AggregationSpec
+from alphaplan_mcp.models import FilterClause, FilterGroup, SortSpec, AggregationSpec, ResultSetSummary
 from alphaplan_mcp.query_engine import _build_filter_expr, _apply_sort, _df_to_rows, QueryEngine
 from alphaplan_mcp.result_store import ResultSetStore
 
@@ -198,3 +198,61 @@ class TestQueryEngine:
         res = await engine.histogram(result_id, column="value", bins=2)
         assert res["bins"] == 2
         assert res["null_count"] == 0
+
+    @pytest.mark.asyncio
+    async def test_list_rows_store_result(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 6
+        assert res.source == "list_rows"
+        # Verify the new result set
+        new_meta = await engine.store.get_metadata(res.result_id)
+        assert new_meta is not None
+        assert new_meta.row_count == 6
+
+    @pytest.mark.asyncio
+    async def test_list_rows_store_result_empty(self, setup_engine):
+        engine, result_id = setup_engine
+        # Create an empty result set first
+        empty_table = pa.table({})
+        empty_summary = await engine.store.store_result("test_session", "test", None, empty_table)
+        res = await engine.list_rows(empty_summary.result_id, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 0
+
+    @pytest.mark.asyncio
+    async def test_list_rows_store_result_column_subset(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, columns=["name", "value"], store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 6
+        assert res.column_count == 2
+        new_meta = await engine.store.get_metadata(res.result_id)
+        assert new_meta.column_count == 2
+
+    @pytest.mark.asyncio
+    async def test_query_rows_store_result(self, setup_engine):
+        engine, result_id = setup_engine
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.query_rows(result_id, filters=filters, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 4
+        assert res.source == "query_rows"
+
+    @pytest.mark.asyncio
+    async def test_query_rows_store_result_empty(self, setup_engine):
+        engine, result_id = setup_engine
+        filters = FilterGroup(clauses=[FilterClause(column="value", operator="gt", value=100)])
+        res = await engine.query_rows(result_id, filters=filters, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 0
+
+    @pytest.mark.asyncio
+    async def test_query_rows_store_result_column_subset(self, setup_engine):
+        engine, result_id = setup_engine
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.query_rows(result_id, filters=filters, columns=["name"], store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 4
+        assert res.column_count == 1

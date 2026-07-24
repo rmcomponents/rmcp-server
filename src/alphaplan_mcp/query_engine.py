@@ -351,14 +351,18 @@ class QueryEngine:
     def __init__(
         self,
         result_store: ResultSetStore,
+        session_id: str,
         settings_obj: Settings = settings,
     ):
         self.store = result_store
+        self.session_id = session_id
         self.settings = settings_obj
 
     async def _ensure_owned(self, result_id: str) -> ResultSetMetadata:
         meta = await self.store.get_metadata(result_id)
         if meta is None:
+            raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
+        if meta.owner_session_id != self.session_id:
             raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
         # update access to extend TTL
         await self.store.update_access(result_id)
@@ -398,6 +402,23 @@ class QueryEngine:
                                      {"available_columns": list(df.columns)})
             df = df.select(columns)
         return df
+
+    # ---------- Helper methods ----------
+
+    async def _store_result_from_df(
+        self,
+        df: pl.DataFrame,
+        source: str,
+        source_parameters: dict,
+    ) -> ResultSetSummary:
+        """Convert a Polars DataFrame to a PyArrow Table and store it as a new result set."""
+        table = df.to_arrow()
+        return await self.store.store_result(
+            session_id=self.session_id,
+            source=source,
+            source_parameters=source_parameters,
+            table=table,
+        )
 
     # ---------- Tool helpers that will be called by MCP tools ----------
 
@@ -509,13 +530,28 @@ class QueryEngine:
         limit: int = 50,
         offset: int = 0,
         sort: Optional[List[SortSpec]] = None,
-    ) -> Dict[str, Any]:
+        store_result: bool = False,
+    ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
         if offset < 0:
             offset = 0
         if limit < 0:
             limit = 0
         meta = await self._ensure_owned(result_id)
+
+        if store_result:
+            df = await self._load_full_df(result_id, columns=columns)
+            if sort:
+                df = _apply_sort(df, sort)
+            return await self._store_result_from_df(
+                df,
+                source="list_rows",
+                source_parameters={
+                    "source_result_id": result_id,
+                    "columns": columns,
+                    "sort": [s.model_dump() for s in sort] if sort else None,
+                },
+            )
 
         if sort:
             # Load full table, sort, then slice
@@ -579,7 +615,8 @@ class QueryEngine:
         sort: Optional[List[SortSpec]] = None,
         limit: int = 50,
         offset: int = 0,
-    ) -> Dict[str, Any]:
+        store_result: bool = False,
+    ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
         if offset < 0:
             offset = 0
@@ -598,12 +635,25 @@ class QueryEngine:
         if filters and filters.clauses:
             mask = _build_filter_expr(filters, schema)
             df = df.filter(mask)
-        total_rows = df.height
         if sort:
             df = _apply_sort(df, sort)
         # Select only the requested columns before returning
         if columns:
             df = df.select(columns)
+            
+        if store_result:
+            return await self._store_result_from_df(
+                df,
+                source="query_rows",
+                source_parameters={
+                    "source_result_id": result_id,
+                    "filters": filters.model_dump() if filters else None,
+                    "columns": columns,
+                    "sort": [s.model_dump() for s in sort] if sort else None,
+                },
+            )
+
+        total_rows = df.height
         return _format_paginated_result(result_id, df, offset, limit, total_rows)
 
     async def distinct_values(
@@ -832,5 +882,5 @@ class QueryEngine:
 
     async def delete_result_set(self, result_id: str) -> Dict[str, Any]:
         meta = await self._ensure_owned(result_id)
-        deleted = await self.store.delete_result(result_id)
+        deleted = await self.store.delete_result(self.session_id, result_id)
         return {"result_id": result_id, "deleted": deleted}
