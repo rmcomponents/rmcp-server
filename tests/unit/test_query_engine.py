@@ -250,6 +250,13 @@ class TestQueryEngine:
         assert new_meta.column_count == 2
 
     @pytest.mark.asyncio
+    async def test_list_rows_store_result_ignores_limit(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, limit=2, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 6  # Full set, not 2
+
+    @pytest.mark.asyncio
     async def test_query_rows_store_result(self, setup_engine):
         engine, result_id = setup_engine
         filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
@@ -274,6 +281,14 @@ class TestQueryEngine:
         assert isinstance(res, ResultSetSummary)
         assert res.row_count == 4
         assert res.column_count == 1
+
+    @pytest.mark.asyncio
+    async def test_query_rows_store_result_ignores_limit(self, setup_engine):
+        engine, result_id = setup_engine
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.query_rows(result_id, filters=filters, limit=2, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 4  # Full filtered set, not 2
 
     # ---------- Provenance Persistence Tests ----------
     @pytest.mark.asyncio
@@ -368,6 +383,14 @@ class TestQueryEngine:
         aggs = [AggregationSpec(operation="sum", column="value", alias="active")]
         with pytest.raises(ToolError, match="collides"):
             await engine.group_by(result_id, group_columns=["active"], aggregations=aggs)
+
+    @pytest.mark.asyncio
+    async def test_group_by_store_result_ignores_limit(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        res = await engine.group_by(result_id, group_columns=["active"], aggregations=aggs, limit=1, store_result=True)
+        assert isinstance(res, ResultSetSummary)
+        assert res.row_count == 2  # Full grouped set, not 1
 
     @pytest.mark.asyncio
     async def test_aggregate_invalid_alias(self, setup_engine):

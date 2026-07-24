@@ -617,7 +617,7 @@ class QueryEngine:
             df = await self._load_full_df(result_id, columns=columns)
             if sort:
                 df = _apply_sort(df, sort)
-            df = df.slice(offset, limit)
+            # Do not slice by limit/offset when storing the result
             parent_meta = await self.store.get_metadata(result_id)
             cols_info = []
             for c in df.columns:
@@ -737,7 +737,7 @@ class QueryEngine:
             df = df.select(columns)
             
         if store_result:
-            df = df.slice(offset, limit)
+            # Do not slice by limit/offset when storing the result
             parent_meta = await self.store.get_metadata(result_id)
             cols_info = []
             for c in df.columns:
@@ -898,9 +898,12 @@ class QueryEngine:
                     agg_type = p_col.type if p_col else "float64"
                     if agg_type == "large_string":
                         agg_type = "string"
+                desc = f"aggregate aggregation: {agg.operation} of {agg.column}"
+                if agg.operation == "count" and agg.column is None:
+                    desc = "aggregate aggregation: total row count"
                 cols_info.append(ColumnInfo(
                     name=agg.alias, type=agg_type, null_count=0, non_null_count=0,
-                    description=f"aggregate aggregation: {agg.operation} of {agg.column}",
+                    description=desc,
                     origin=ColumnOrigin.aggregate, operation=agg.operation, source_column=agg.column
                 ))
             return await self._store_result_from_df(
@@ -970,7 +973,7 @@ class QueryEngine:
             grouped = _apply_sort(grouped, sort)
 
         if store_result:
-            grouped = grouped.slice(offset, limit)
+            # Do not slice by limit/offset when storing the result
             cols_info = []
             for gc in group_columns:
                 p_col = next((c for c in parent_meta.columns if c.name == gc), None)
@@ -991,9 +994,12 @@ class QueryEngine:
                     agg_type = p_col.type if p_col else "float64"
                     if agg_type == "large_string":
                         agg_type = "string"
+                desc = f"group_by aggregation: {agg.operation} of {agg.column}"
+                if agg.operation == "count" and agg.column is None:
+                    desc = "group_by aggregation: count of rows"
                 cols_info.append(ColumnInfo(
                     name=agg.alias, type=agg_type, null_count=0, non_null_count=0,
-                    description=f"group_by aggregation: {agg.operation} of {agg.column}",
+                    description=desc,
                     origin=ColumnOrigin.aggregate, operation=agg.operation, source_column=agg.column
                 ))
             return await self._store_result_from_df(

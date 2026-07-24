@@ -212,3 +212,57 @@ Columns: `HauptLieferant` (string, `origin: "derived"`, description `"distinct v
 7. Every derived-set type is provably consumable by every `result_id`-accepting tool (chaining tests green).
 8. Invariant: on a `group_by` count set, `sum(count_column) == parent.row_count`.
 
+---
+
+## 9. Tool Reference
+
+### 9.1 Filter Operators
+Filters are defined using `FilterGroup` and `FilterClause`. The allowed `operator` values and their expected `value` shapes are:
+- `eq`: Single value. Equality check. (Supports `%` and `_` wildcards for strings, acting like `like`).
+- `ne`: Single value. Inequality check.
+- `gt`, `gte`, `lt`, `lte`: Single value. Numeric/date comparisons.
+- `in`: Array of values. Matches if the column value is in the list.
+- `not_in`: Array of values. Matches if the column value is not in the list.
+- `between`: Array of exactly two values. Matches if `value >= low` and `value <= high`.
+- `like`: String with `%` (any sequence) and `_` (single character) wildcards.
+- `not_like`: Negated `like`.
+- `contains`: String substring match.
+- `starts_with`: String prefix match.
+- `ends_with`: String suffix match.
+- `is_null`: No `value` field required. Matches null values.
+- `is_not_null`: No `value` field required. Matches non-null values.
+
+### 9.2 `case_sensitive` Default
+String comparisons (e.g., `eq`, `like`, `contains`) are case-insensitive by default (`case_sensitive: false`). Set `case_sensitive: true` in the `FilterClause` for case-sensitive matching.
+
+### 9.3 Aggregation Operations
+For `aggregate` and `group_by`, the `operation` field in `AggregationSpec` must be one of:
+- `sum`: Requires `column`.
+- `avg`: Requires `column`.
+- `count`: Does not accept a `column` (use `column: null`). Counts the number of rows.
+- `count_non_null`: Requires `column`. Counts non-null values.
+- `count_distinct`: Requires `column`. Counts distinct values.
+- `min`: Requires `column`.
+- `max`: Requires `column`.
+
+### 9.4 Enum Values for `distinct_values` and `histogram`
+- `distinct_values` `order` parameter accepts: `count_desc` (default), `count_asc`, `value_asc`, `value_desc`.
+- `histogram` on string columns returns the top-N values by count plus an `other_count` bucket. The response `bins` count will be N+1. For numeric columns, it returns evenly spaced bins.
+
+### 9.5 `store_result` Semantics
+When `store_result=true` is passed to `list_rows`, `query_rows`, `group_by`, `distinct_values`, or `histogram`, the **full** filtered/grouped result set is persisted as a new result set. The `limit` and `offset` parameters only affect the rows returned in the immediate response, not the persisted set.
+
+### 9.6 Hard Limits and Lifecycle
+- Result sets are capped at 250,000 rows (`RESULTSET_MAX_ROWS`). Exceeding this raises `RESULT_SET_TOO_LARGE`.
+- Result sets have a TTL (default ~24h, configurable via `RESULTSET_IDLE_TTL_SECONDS` and `RESULTSET_MAX_TTL_SECONDS`). The `expires_at` field indicates the absolute expiration time.
+
+### 9.7 Error Catalog
+- `UNKNOWN_COLUMN`: The requested column does not exist. Returns `available_columns` in the details.
+- `INVALID_ARGUMENT`: The request parameters are invalid (e.g., bad operator, too many clauses).
+- `RESULT_NOT_FOUND`: The `result_id` does not exist or has expired.
+- `RESULT_SET_TOO_LARGE`: The operation exceeded the row or byte limit.
+- `TOO_MANY_GROUPS`: `group_by` cardinality exceeded the limit.
+
+### 9.8 Analytics Operate on the Full Parent Set
+`count_rows`, `aggregate`, `group_by`, `distinct_values`, and `histogram` apply their `filters` directly to the full parent result set. You do not need to materialize a subset first to compute metrics. `result_label` is purely organizational and does not affect data.
+
