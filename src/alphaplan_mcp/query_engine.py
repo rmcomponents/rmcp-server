@@ -791,8 +791,8 @@ class QueryEngine:
             if p_type == "large_string":
                 p_type = "string"
             cols_info = [
-                ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else None, origin=ColumnOrigin.passthrough, source_column=column),
-                ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else f"distinct_values passthrough: {column}", origin=ColumnOrigin.passthrough, source_column=column),
+                ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, description="distinct_values derived: count", origin=ColumnOrigin.derived)
             ]
             return await self._store_result_from_df(
                 value_counts,
@@ -869,6 +869,7 @@ class QueryEngine:
                         agg_type = "string"
                 cols_info.append(ColumnInfo(
                     name=agg.alias, type=agg_type, null_count=0, non_null_count=0,
+                    description=f"aggregate aggregation: {agg.operation} of {agg.column}",
                     origin=ColumnOrigin.aggregate, operation=agg.operation, source_column=agg.column
                 ))
             return await self._store_result_from_df(
@@ -943,7 +944,7 @@ class QueryEngine:
                     p_type = "string"
                 cols_info.append(ColumnInfo(
                     name=gc, type=p_type, null_count=0, non_null_count=0,
-                    description=p_col.description if p_col else None,
+                    description=p_col.description if p_col else f"group_by group key: {gc}",
                     origin=ColumnOrigin.group_key, source_column=gc
                 ))
             for agg in aggregations:
@@ -957,6 +958,7 @@ class QueryEngine:
                         agg_type = "string"
                 cols_info.append(ColumnInfo(
                     name=agg.alias, type=agg_type, null_count=0, non_null_count=0,
+                    description=f"group_by aggregation: {agg.operation} of {agg.column}",
                     origin=ColumnOrigin.aggregate, operation=agg.operation, source_column=agg.column
                 ))
             return await self._store_result_from_df(
@@ -1023,8 +1025,8 @@ class QueryEngine:
                 if p_type == "large_string":
                     p_type = "string"
                 cols_info = [
-                    ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else None, origin=ColumnOrigin.passthrough, source_column=column),
-                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                    ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else f"histogram passthrough: {column}", origin=ColumnOrigin.passthrough, source_column=column),
+                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, description="histogram derived: count", origin=ColumnOrigin.derived)
                 ]
                 return await self._store_result_from_df(
                     empty_df,
@@ -1080,9 +1082,9 @@ class QueryEngine:
                 if p_type == "large_string":
                     p_type = "string"
                 cols_info = [
-                    ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else None, origin=ColumnOrigin.passthrough, source_column=column),
-                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                    ColumnInfo(name="is_other", type="bool", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                    ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else f"histogram passthrough: {column}", origin=ColumnOrigin.passthrough, source_column=column),
+                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, description="histogram derived: count", origin=ColumnOrigin.derived),
+                    ColumnInfo(name="is_other", type="bool", null_count=0, non_null_count=0, description="histogram derived: is_other", origin=ColumnOrigin.derived)
                 ]
                 return await self._store_result_from_df(
                     final_df,
@@ -1130,11 +1132,11 @@ class QueryEngine:
                     if p_type == "large_string":
                         p_type = "string"
                     cols_info = [
-                        ColumnInfo(name="bin_index", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                        ColumnInfo(name="bin_lower", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                        ColumnInfo(name="bin_upper", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                        ColumnInfo(name="bin_label", type="string", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                        ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                        ColumnInfo(name="bin_index", type="int64", null_count=0, non_null_count=0, description="histogram derived: bin_index", origin=ColumnOrigin.derived),
+                        ColumnInfo(name="bin_lower", type=p_type, null_count=0, non_null_count=0, description="histogram derived: bin_lower", origin=ColumnOrigin.derived),
+                        ColumnInfo(name="bin_upper", type=p_type, null_count=0, non_null_count=0, description="histogram derived: bin_upper", origin=ColumnOrigin.derived),
+                        ColumnInfo(name="bin_label", type="string", null_count=0, non_null_count=0, description="histogram derived: bin_label", origin=ColumnOrigin.derived),
+                        ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, description="histogram derived: count", origin=ColumnOrigin.derived)
                     ]
                     return await self._store_result_from_df(
                         empty_df,
@@ -1173,6 +1175,8 @@ class QueryEngine:
             hist_df = hist_df.with_columns([
                 pl.col("bin_upper").shift(1).fill_null(float("-inf")).alias("bin_lower"),
                 pl.arange(0, hist_df.height).alias("bin_index"),
+            ])
+            hist_df = hist_df.with_columns([
                 pl.format("[{}, {}]", pl.col("bin_lower"), pl.col("bin_upper")).alias("bin_label")
             ])
             # Reorder columns
@@ -1184,11 +1188,11 @@ class QueryEngine:
                 if p_type == "large_string":
                     p_type = "string"
                 cols_info = [
-                    ColumnInfo(name="bin_index", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                    ColumnInfo(name="bin_lower", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                    ColumnInfo(name="bin_upper", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                    ColumnInfo(name="bin_label", type="string", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
-                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                    ColumnInfo(name="bin_index", type="int64", null_count=0, non_null_count=0, description="histogram derived: bin_index", origin=ColumnOrigin.derived),
+                    ColumnInfo(name="bin_lower", type=p_type, null_count=0, non_null_count=0, description="histogram derived: bin_lower", origin=ColumnOrigin.derived),
+                    ColumnInfo(name="bin_upper", type=p_type, null_count=0, non_null_count=0, description="histogram derived: bin_upper", origin=ColumnOrigin.derived),
+                    ColumnInfo(name="bin_label", type="string", null_count=0, non_null_count=0, description="histogram derived: bin_label", origin=ColumnOrigin.derived),
+                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, description="histogram derived: count", origin=ColumnOrigin.derived)
                 ]
                 return await self._store_result_from_df(
                     hist_df,
