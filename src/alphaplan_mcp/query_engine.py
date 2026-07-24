@@ -542,71 +542,53 @@ class QueryEngine:
                                      {"available_columns": list(all_columns.keys())})
 
         result = []
-        need_distinct_examples = include_examples
-        if need_distinct_examples:
-            # Load full table to compute distinct counts and examples
-            # But we might need only a sample; for distinct we need full scan, but we can limit.
-            # We'll load the full table and compute for requested columns.
+        if include_examples:
             df = await self._load_full_df(result_id, columns=columns)
-            # For each requested column, compute info
-            for col_name in columns:
-                col_info = all_columns[col_name]
-                col_entry = {
-                    "name": col_info.name,
-                    "type": col_info.type,
-                    "description": self._get_description(col_info, meta),
-                    "null_count": col_info.null_count,
-                    "non_null_count": col_info.non_null_count,
-                    "min": col_info.min,
-                    "max": col_info.max,
-                    "sum": col_info.sum,
-                    "avg": col_info.avg,
-                    "min_length": col_info.min_length,
-                    "max_length": col_info.max_length,
-                }
+
+        for col_name in columns:
+            col_info = all_columns[col_name]
+            col_entry = {
+                "name": col_info.name,
+                "type": col_info.type,
+                "description": self._get_description(col_info, meta),
+                "null_count": col_info.null_count,
+                "non_null_count": col_info.non_null_count,
+                "min": col_info.min,
+                "max": col_info.max,
+                "sum": col_info.sum,
+                "avg": col_info.avg,
+                "min_length": col_info.min_length,
+                "max_length": col_info.max_length,
+            }
+
+            if include_examples:
                 # compute distinct count if possible
                 try:
                     distinct_count = df[col_name].n_unique()
                     col_entry["distinct_count"] = distinct_count
                 except Exception:
                     col_entry["distinct_count"] = None
+
                 # examples (up to 3 distinct non-empty values)
-                if include_examples:
-                    try:
-                        col_series = df[col_name]
-                        non_null = col_series.drop_nulls()
-                        # Filter out empty strings for string/categorical columns
-                        if non_null.dtype in (pl.Utf8, pl.Categorical):
-                            non_empty = non_null.filter(non_null != "")
-                        else:
-                            non_empty = non_null
-                        
-                        if non_empty.len() > 0:
-                            examples = non_empty.unique(maintain_order=True).head(3).to_list()
-                        else:
-                            examples = []
-                            
-                        col_entry["examples"] = [_normalize_value(v) for v in examples]
-                    except Exception:
-                        col_entry["examples"] = []
-                result.append(col_entry)
-        else:
-            # Use stored stats only
-            for col_name in columns:
-                col_info = all_columns[col_name]
-                result.append({
-                    "name": col_info.name,
-                    "type": col_info.type,
-                    "description": self._get_description(col_info, meta),
-                    "null_count": col_info.null_count,
-                    "non_null_count": col_info.non_null_count,
-                    "min": col_info.min,
-                    "max": col_info.max,
-                    "sum": col_info.sum,
-                    "avg": col_info.avg,
-                    "min_length": col_info.min_length,
-                    "max_length": col_info.max_length,
-                })
+                try:
+                    col_series = df[col_name]
+                    non_null = col_series.drop_nulls()
+                    # Filter out empty strings for string/categorical columns
+                    if non_null.dtype in (pl.Utf8, pl.Categorical):
+                        non_empty = non_null.filter(non_null != "")
+                    else:
+                        non_empty = non_null
+
+                    if non_empty.len() > 0:
+                        examples = non_empty.unique(maintain_order=True).head(3).to_list()
+                    else:
+                        examples = []
+
+                    col_entry["examples"] = [_normalize_value(v) for v in examples]
+                except Exception:
+                    col_entry["examples"] = []
+
+            result.append(col_entry)
 
         return {
             "result_id": result_id,
@@ -635,6 +617,7 @@ class QueryEngine:
             df = await self._load_full_df(result_id, columns=columns)
             if sort:
                 df = _apply_sort(df, sort)
+            df = df.slice(offset, limit)
             parent_meta = await self.store.get_metadata(result_id)
             cols_info = []
             for c in df.columns:
@@ -754,6 +737,7 @@ class QueryEngine:
             df = df.select(columns)
             
         if store_result:
+            df = df.slice(offset, limit)
             parent_meta = await self.store.get_metadata(result_id)
             cols_info = []
             for c in df.columns:
@@ -986,6 +970,7 @@ class QueryEngine:
             grouped = _apply_sort(grouped, sort)
 
         if store_result:
+            grouped = grouped.slice(offset, limit)
             cols_info = []
             for gc in group_columns:
                 p_col = next((c for c in parent_meta.columns if c.name == gc), None)
