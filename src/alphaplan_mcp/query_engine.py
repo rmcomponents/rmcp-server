@@ -18,6 +18,7 @@ from .errors import tool_error
 from .models import (
     AggregationSpec,
     ColumnInfo,
+    ColumnOrigin,
     FilterClause,
     FilterGroup,
     ResultSetMetadata,
@@ -428,6 +429,11 @@ class QueryEngine:
         self,
         df: pl.DataFrame,
         provenance: ResultProvenance,
+        columns: Optional[List[ColumnInfo]] = None,
+        source: Optional[Dict[str, Any]] = None,
+        grain: Optional[str] = None,
+        source_row_count: Optional[int] = None,
+        result_label: Optional[str] = None,
     ) -> ResultSetSummary:
         """Convert a Polars DataFrame to a PyArrow Table and store it as a new result set."""
         table = df.to_arrow()
@@ -435,6 +441,11 @@ class QueryEngine:
             session_id=self.session_id,
             provenance=provenance,
             table=table,
+            columns=columns,
+            source=source,
+            grain=grain,
+            source_row_count=source_row_count,
+            result_label=result_label,
         )
 
     # ---------- Tool helpers that will be called by MCP tools ----------
@@ -692,6 +703,7 @@ class QueryEngine:
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit = min(limit, self.settings.TOOL_MAX_DISTINCT_VALUES)
         meta = await self._ensure_owned(result_id)
+        parent_meta = await self.store.get_metadata(result_id)
         df = await self._load_full_df(result_id, columns=[column])
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
@@ -716,6 +728,14 @@ class QueryEngine:
             raise tool_error("INVALID_ARGUMENT", f"Unsupported order '{order}'.")
 
         if store_result:
+            p_col = next((c for c in parent_meta.columns if c.name == column), None)
+            p_type = p_col.type if p_col else "string"
+            if p_type == "large_string":
+                p_type = "string"
+            cols_info = [
+                ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else None, origin=ColumnOrigin.passthrough, source_column=column),
+                ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+            ]
             return await self._store_result_from_df(
                 value_counts,
                 provenance=ResultProvenance(
@@ -726,6 +746,11 @@ class QueryEngine:
                         "filters": filters.model_dump() if filters else None,
                     },
                 ),
+                columns=cols_info,
+                source={"op": "distinct_values", "parent": result_id, "column": column, "filters": filters.model_dump() if filters else None},
+                grain=f"one row per distinct {column}",
+                source_row_count=parent_meta.row_count,
+                result_label=result_label,
             )
 
         total_distinct = value_counts.height
@@ -757,6 +782,7 @@ class QueryEngine:
         result_label: Optional[str] = None,
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         meta = await self._ensure_owned(result_id)
+        parent_meta = await self.store.get_metadata(result_id)
         _validate_aliases(aggregations)
         # Determine needed columns
         needed_cols = set()
@@ -773,6 +799,20 @@ class QueryEngine:
         result_df = df.select(agg_exprs)
 
         if store_result:
+            cols_info = []
+            for agg in aggregations:
+                agg_type = "int64"
+                if agg.operation in ("avg", "mean"):
+                    agg_type = "float64"
+                elif agg.operation in ("sum", "min", "max"):
+                    p_col = next((c for c in parent_meta.columns if c.name == agg.column), None)
+                    agg_type = p_col.type if p_col else "float64"
+                    if agg_type == "large_string":
+                        agg_type = "string"
+                cols_info.append(ColumnInfo(
+                    name=agg.alias, type=agg_type, null_count=0, non_null_count=0,
+                    origin=ColumnOrigin.aggregate, operation=agg.operation, source_column=agg.column
+                ))
             return await self._store_result_from_df(
                 result_df,
                 provenance=ResultProvenance(
@@ -783,6 +823,11 @@ class QueryEngine:
                         "filters": filters.model_dump() if filters else None,
                     },
                 ),
+                columns=cols_info,
+                source={"op": "aggregate", "parent": result_id, "aggregations": [a.model_dump() for a in aggregations], "filters": filters.model_dump() if filters else None},
+                grain="single row",
+                source_row_count=parent_meta.row_count,
+                result_label=result_label,
             )
 
         row = result_df.to_dicts()[0]
@@ -805,6 +850,7 @@ class QueryEngine:
         if len(group_columns) > self.settings.TOOL_MAX_GROUP_COLUMNS:
             raise tool_error("INVALID_ARGUMENT", f"Too many group columns (max {self.settings.TOOL_MAX_GROUP_COLUMNS}).")
         meta = await self._ensure_owned(result_id)
+        parent_meta = await self.store.get_metadata(result_id)
         _validate_aliases(aggregations, group_columns)
         # Determine needed columns
         needed_cols = set(group_columns)
@@ -831,6 +877,30 @@ class QueryEngine:
             grouped = _apply_sort(grouped, sort)
 
         if store_result:
+            cols_info = []
+            for gc in group_columns:
+                p_col = next((c for c in parent_meta.columns if c.name == gc), None)
+                p_type = p_col.type if p_col else "string"
+                if p_type == "large_string":
+                    p_type = "string"
+                cols_info.append(ColumnInfo(
+                    name=gc, type=p_type, null_count=0, non_null_count=0,
+                    description=p_col.description if p_col else None,
+                    origin=ColumnOrigin.group_key, source_column=gc
+                ))
+            for agg in aggregations:
+                agg_type = "int64"
+                if agg.operation in ("avg", "mean"):
+                    agg_type = "float64"
+                elif agg.operation in ("sum", "min", "max"):
+                    p_col = next((c for c in parent_meta.columns if c.name == agg.column), None)
+                    agg_type = p_col.type if p_col else "float64"
+                    if agg_type == "large_string":
+                        agg_type = "string"
+                cols_info.append(ColumnInfo(
+                    name=agg.alias, type=agg_type, null_count=0, non_null_count=0,
+                    origin=ColumnOrigin.aggregate, operation=agg.operation, source_column=agg.column
+                ))
             return await self._store_result_from_df(
                 grouped,
                 provenance=ResultProvenance(
@@ -843,6 +913,11 @@ class QueryEngine:
                         "sort": [s.model_dump() for s in sort] if sort else None,
                     },
                 ),
+                columns=cols_info,
+                source={"op": "group_by", "parent": result_id, "group_columns": group_columns, "aggregations": [a.model_dump() for a in aggregations], "filters": filters.model_dump() if filters else None},
+                grain=f"one row per ({', '.join(group_columns)})",
+                source_row_count=parent_meta.row_count,
+                result_label=result_label,
             )
 
         grouped_slice = grouped.slice(offset, limit)
@@ -872,6 +947,7 @@ class QueryEngine:
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         bins = min(bins, 50)
         meta = await self._ensure_owned(result_id)
+        parent_meta = await self.store.get_metadata(result_id)
         df = await self._load_full_df(result_id, columns=[column])
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
@@ -884,6 +960,14 @@ class QueryEngine:
         if non_null.height == 0:
             if store_result:
                 empty_df = pl.DataFrame({column: [], "count": []})
+                p_col = next((c for c in parent_meta.columns if c.name == column), None)
+                p_type = p_col.type if p_col else "string"
+                if p_type == "large_string":
+                    p_type = "string"
+                cols_info = [
+                    ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else None, origin=ColumnOrigin.passthrough, source_column=column),
+                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                ]
                 return await self._store_result_from_df(
                     empty_df,
                     provenance=ResultProvenance(
@@ -895,6 +979,11 @@ class QueryEngine:
                             "filters": filters.model_dump() if filters else None,
                         },
                     ),
+                    columns=cols_info,
+                    source={"op": "histogram", "parent": result_id, "column": column, "bins": bins, "filters": filters.model_dump() if filters else None},
+                    grain=f"one row per histogram bin for {column}",
+                    source_row_count=parent_meta.row_count,
+                    result_label=result_label,
                 )
             return {
                 "result_id": result_id,
@@ -928,6 +1017,15 @@ class QueryEngine:
                 final_df = value_counts.with_columns(pl.lit(False).alias("is_other"))
                 
             if store_result:
+                p_col = next((c for c in parent_meta.columns if c.name == column), None)
+                p_type = p_col.type if p_col else "string"
+                if p_type == "large_string":
+                    p_type = "string"
+                cols_info = [
+                    ColumnInfo(name=column, type=p_type, null_count=0, non_null_count=0, description=p_col.description if p_col else None, origin=ColumnOrigin.passthrough, source_column=column),
+                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                    ColumnInfo(name="is_other", type="bool", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                ]
                 return await self._store_result_from_df(
                     final_df,
                     provenance=ResultProvenance(
@@ -939,6 +1037,11 @@ class QueryEngine:
                             "filters": filters.model_dump() if filters else None,
                         },
                     ),
+                    columns=cols_info,
+                    source={"op": "histogram", "parent": result_id, "column": column, "bins": bins, "filters": filters.model_dump() if filters else None},
+                    grain=f"one row per histogram bin for {column}",
+                    source_row_count=parent_meta.row_count,
+                    result_label=result_label,
                 )
 
             histogram = []
@@ -964,6 +1067,17 @@ class QueryEngine:
             if col_min is None or col_max is None:
                 if store_result:
                     empty_df = pl.DataFrame({column: [], "count": []})
+                    p_col = next((c for c in parent_meta.columns if c.name == column), None)
+                    p_type = p_col.type if p_col else "float64"
+                    if p_type == "large_string":
+                        p_type = "string"
+                    cols_info = [
+                        ColumnInfo(name="bin_index", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                        ColumnInfo(name="bin_lower", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                        ColumnInfo(name="bin_upper", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                        ColumnInfo(name="bin_label", type="string", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                        ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                    ]
                     return await self._store_result_from_df(
                         empty_df,
                         provenance=ResultProvenance(
@@ -975,6 +1089,11 @@ class QueryEngine:
                                 "filters": filters.model_dump() if filters else None,
                             },
                         ),
+                        columns=cols_info,
+                        source={"op": "histogram", "parent": result_id, "column": column, "bins": bins, "filters": filters.model_dump() if filters else None},
+                        grain=f"one row per histogram bin for {column}",
+                        source_row_count=parent_meta.row_count,
+                        result_label=result_label,
                     )
                 return {
                     "result_id": result_id,
@@ -1002,6 +1121,17 @@ class QueryEngine:
             hist_df = hist_df.select(["bin_index", "bin_lower", "bin_upper", "bin_label", "count"])
             
             if store_result:
+                p_col = next((c for c in parent_meta.columns if c.name == column), None)
+                p_type = p_col.type if p_col else "float64"
+                if p_type == "large_string":
+                    p_type = "string"
+                cols_info = [
+                    ColumnInfo(name="bin_index", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                    ColumnInfo(name="bin_lower", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                    ColumnInfo(name="bin_upper", type=p_type, null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                    ColumnInfo(name="bin_label", type="string", null_count=0, non_null_count=0, origin=ColumnOrigin.derived),
+                    ColumnInfo(name="count", type="int64", null_count=0, non_null_count=0, origin=ColumnOrigin.derived)
+                ]
                 return await self._store_result_from_df(
                     hist_df,
                     provenance=ResultProvenance(
@@ -1013,6 +1143,11 @@ class QueryEngine:
                             "filters": filters.model_dump() if filters else None,
                         },
                     ),
+                    columns=cols_info,
+                    source={"op": "histogram", "parent": result_id, "column": column, "bins": bins, "filters": filters.model_dump() if filters else None},
+                    grain=f"one row per histogram bin for {column}",
+                    source_row_count=parent_meta.row_count,
+                    result_label=result_label,
                 )
 
             histogram = []

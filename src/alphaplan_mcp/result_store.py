@@ -6,7 +6,7 @@ import asyncio
 import logging
 import uuid
 from datetime import datetime, timedelta, timezone
-from typing import AsyncGenerator, Dict, List, Optional, Tuple
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 import pyarrow as pa
 from redis.asyncio import Redis
@@ -56,6 +56,11 @@ class ResultSetStore:
         session_id: str,
         provenance: ResultProvenance,
         table: pa.Table,
+        columns: Optional[List[ColumnInfo]] = None,
+        source: Optional[Dict[str, Any]] = None,
+        grain: Optional[str] = None,
+        source_row_count: Optional[int] = None,
+        result_label: Optional[str] = None,
     ) -> ResultSetSummary:
         """Stream a PyArrow table into Redis, enforcing row/byte limits."""
         if table.num_rows > self.max_rows:
@@ -79,11 +84,35 @@ class ResultSetStore:
                 chunks.append(table.slice(start, end - start))
 
         # compute column stats and metadata
-        columns_info = self._compute_column_stats(table)
+        computed_stats = self._compute_column_stats(table)
+        if columns is None:
+            columns_info = computed_stats
+        else:
+            stats_map = {c.name: c for c in computed_stats}
+            columns_info = []
+            for c in columns:
+                stat = stats_map.get(c.name)
+                if stat:
+                    columns_info.append(c.model_copy(update={
+                        "null_count": stat.null_count,
+                        "non_null_count": stat.non_null_count,
+                        "min": stat.min,
+                        "max": stat.max,
+                        "sum": stat.sum,
+                        "avg": stat.avg,
+                        "min_length": stat.min_length,
+                        "max_length": stat.max_length,
+                    }))
+                else:
+                    columns_info.append(c)
         meta = ResultSetMetadata(
             result_id=result_id,
             owner_session_id=session_id,
             provenance=provenance,
+            source=source,
+            grain=grain,
+            source_row_count=source_row_count,
+            result_label=result_label,
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
@@ -127,6 +156,10 @@ class ResultSetStore:
             result_id=result_id,
             owner_session_id=session_id,
             provenance=provenance,
+            source=source,
+            grain=grain,
+            source_row_count=source_row_count,
+            result_label=result_label,
             row_count=total_rows,
             column_count=len(table.schema),
             stored_size_bytes=total_stored,
@@ -141,6 +174,11 @@ class ResultSetStore:
         session_id: str,
         provenance: ResultProvenance,
         batches: AsyncGenerator[pa.RecordBatch, None],
+        columns: Optional[List[ColumnInfo]] = None,
+        source: Optional[Dict[str, Any]] = None,
+        grain: Optional[str] = None,
+        source_row_count: Optional[int] = None,
+        result_label: Optional[str] = None,
     ) -> ResultSetSummary:
         """Ingest a stream of Arrow record batches, writing chunks incrementally."""
         result_id = f"rs_{uuid.uuid4()}"
@@ -213,7 +251,27 @@ class ResultSetStore:
             total_stored = 0
             chunk_count = 0
         else:
-            columns_info = stats_accum.finalize(schema)
+            computed_stats = stats_accum.finalize(schema)
+            if columns is None:
+                columns_info = computed_stats
+            else:
+                stats_map = {c.name: c for c in computed_stats}
+                columns_info = []
+                for c in columns:
+                    stat = stats_map.get(c.name)
+                    if stat:
+                        columns_info.append(c.model_copy(update={
+                            "null_count": stat.null_count,
+                            "non_null_count": stat.non_null_count,
+                            "min": stat.min,
+                            "max": stat.max,
+                            "sum": stat.sum,
+                            "avg": stat.avg,
+                            "min_length": stat.min_length,
+                            "max_length": stat.max_length,
+                        }))
+                    else:
+                        columns_info.append(c)
             chunk_count = chunk_index
 
         if chunk_count == 0:
@@ -227,6 +285,10 @@ class ResultSetStore:
             result_id=result_id,
             owner_session_id=session_id,
             provenance=provenance,
+            source=source,
+            grain=grain,
+            source_row_count=source_row_count,
+            result_label=result_label,
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
@@ -261,6 +323,10 @@ class ResultSetStore:
             result_id=result_id,
             owner_session_id=session_id,
             provenance=provenance,
+            source=source,
+            grain=grain,
+            source_row_count=source_row_count,
+            result_label=result_label,
             row_count=total_rows,
             column_count=len(schema),
             stored_size_bytes=total_stored,
