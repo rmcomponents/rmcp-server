@@ -118,6 +118,8 @@ async def distinct_values(
     include_counts: bool = True,
     order: str = "count_desc",
     include_null: bool = False,
+    store_result: bool = False,
+    result_label: Optional[str] = None,
     ctx: Context = None,
 ):
     """Return distinct values for a column, with optional counts and ordering."""
@@ -125,7 +127,8 @@ async def distinct_values(
         store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.distinct_values(
-            result_id, column, filters, limit, offset, include_counts, order, include_null
+            result_id, column, filters, limit, offset, include_counts, order, include_null,
+            store_result, result_label
         )
     except ToolError as e:
         return e.to_dict()
@@ -138,13 +141,15 @@ async def aggregate(
     result_id: str,
     aggregations: List[AggregationSpec],
     filters: Optional[FilterGroup] = None,
+    store_result: bool = False,
+    result_label: Optional[str] = None,
     ctx: Context = None,
 ):
     """Compute aggregations over the result set (or a filtered subset)."""
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
-        return await engine.aggregate(result_id, aggregations, filters)
+        return await engine.aggregate(result_id, aggregations, filters, store_result, result_label)
     except ToolError as e:
         return e.to_dict()
     except Exception as e:
@@ -160,6 +165,8 @@ async def group_by(
     sort: Optional[List[SortSpec]] = None,
     limit: int = 50,
     offset: int = 0,
+    store_result: bool = False,
+    result_label: Optional[str] = None,
     ctx: Context = None,
 ):
     """Group rows and compute aggregations per group."""
@@ -167,7 +174,8 @@ async def group_by(
         store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
         return await engine.group_by(
-            result_id, group_columns, aggregations, filters, sort, limit, offset
+            result_id, group_columns, aggregations, filters, sort, limit, offset,
+            store_result, result_label
         )
     except ToolError as e:
         return e.to_dict()
@@ -181,6 +189,8 @@ async def histogram(
     column: str,
     bins: int = 10,
     filters: Optional[FilterGroup] = None,
+    store_result: bool = False,
+    result_label: Optional[str] = None,
     ctx: Context = None,
 ):
     """
@@ -193,7 +203,7 @@ async def histogram(
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
-        return await engine.histogram(result_id, column, bins, filters)
+        return await engine.histogram(result_id, column, bins, filters, store_result, result_label)
     except ToolError as e:
         return e.to_dict()
     except Exception as e:
