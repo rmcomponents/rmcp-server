@@ -12,7 +12,7 @@ import pyarrow as pa
 from redis.asyncio import Redis
 
 from .config import settings
-from .models import ColumnInfo, ResultSetMetadata, ResultSetSummary
+from .models import ColumnInfo, ResultSetMetadata, ResultSetSummary, ResultProvenance
 from .serialization import deserialize_metadata, deserialize_table, serialize_metadata, serialize_table
 from .errors import tool_error
 
@@ -54,8 +54,7 @@ class ResultSetStore:
     async def store_result(
         self,
         session_id: str,
-        source: str,
-        source_parameters: Optional[dict],
+        provenance: ResultProvenance,
         table: pa.Table,
     ) -> ResultSetSummary:
         """Stream a PyArrow table into Redis, enforcing row/byte limits."""
@@ -84,7 +83,7 @@ class ResultSetStore:
         meta = ResultSetMetadata(
             result_id=result_id,
             owner_session_id=session_id,
-            source=source,
+            provenance=provenance,
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
@@ -94,7 +93,6 @@ class ResultSetStore:
             stored_size_bytes=0,      # will fill after serialization
             chunk_count=len(chunks),
             columns=columns_info,
-            source_parameters=source_parameters,
         )
 
         if meta.uncompressed_size_bytes > self.max_bytes:
@@ -128,7 +126,7 @@ class ResultSetStore:
         return ResultSetSummary(
             result_id=result_id,
             owner_session_id=session_id,
-            source=source,
+            provenance=provenance,
             row_count=total_rows,
             column_count=len(table.schema),
             stored_size_bytes=total_stored,
@@ -141,8 +139,7 @@ class ResultSetStore:
     async def store_result_stream(
         self,
         session_id: str,
-        source: str,
-        source_parameters: Optional[dict],
+        provenance: ResultProvenance,
         batches: AsyncGenerator[pa.RecordBatch, None],
     ) -> ResultSetSummary:
         """Ingest a stream of Arrow record batches, writing chunks incrementally."""
@@ -229,7 +226,7 @@ class ResultSetStore:
         meta = ResultSetMetadata(
             result_id=result_id,
             owner_session_id=session_id,
-            source=source,
+            provenance=provenance,
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
@@ -239,7 +236,6 @@ class ResultSetStore:
             stored_size_bytes=total_stored,
             chunk_count=chunk_count,
             columns=columns_info,
-            source_parameters=source_parameters,
         )
 
         # Promote chunk TTLs (if any) and write metadata
@@ -264,7 +260,7 @@ class ResultSetStore:
         return ResultSetSummary(
             result_id=result_id,
             owner_session_id=session_id,
-            source=source,
+            provenance=provenance,
             row_count=total_rows,
             column_count=len(schema),
             stored_size_bytes=total_stored,
@@ -358,7 +354,7 @@ class ResultSetStore:
                 summaries.append(ResultSetSummary(
                     result_id=meta.result_id,
                     owner_session_id=meta.owner_session_id,
-                    source=meta.source,
+                    provenance=meta.provenance,
                     row_count=meta.row_count,
                     column_count=meta.column_count,
                     stored_size_bytes=meta.stored_size_bytes,

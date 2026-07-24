@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 import pyarrow as pa
 import pytest
 
-from alphaplan_mcp.models import ColumnInfo, ResultSetMetadata
+from alphaplan_mcp.models import ColumnInfo, ResultSetMetadata, ResultProvenance
 from alphaplan_mcp.serialization import (
     serialize_metadata,
     deserialize_metadata,
@@ -21,7 +21,7 @@ class TestMetadataSerialization:
         meta = ResultSetMetadata(
             result_id="rs_abc123",
             owner_session_id="session1",
-            source="customers",
+            provenance=ResultProvenance(op="customers"),
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=now,
@@ -34,7 +34,6 @@ class TestMetadataSerialization:
                 ColumnInfo(name="id", type="int64", null_count=0, non_null_count=100),
                 ColumnInfo(name="name", type="string", null_count=5, non_null_count=95),
             ],
-            source_parameters={"customer_name": "Acme"},
         )
 
         data = serialize_metadata(meta)
@@ -49,7 +48,6 @@ class TestMetadataSerialization:
         assert recovered.row_count == meta.row_count
         assert len(recovered.columns) == 2
         assert recovered.columns[0].name == "id"
-        assert recovered.source_parameters == {"customer_name": "Acme"}
 
 
 class TestArrowSerialization:

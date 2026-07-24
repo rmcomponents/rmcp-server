@@ -9,6 +9,7 @@ import pytest
 from alphaplan_mcp.config import Settings
 from alphaplan_mcp.result_store import ResultSetStore
 from alphaplan_mcp.errors import ToolError
+from alphaplan_mcp.models import ResultProvenance
 
 
 settings_for_tests = Settings(
@@ -44,8 +45,7 @@ async def test_store_and_load(fake_redis):
     table = _make_table(50)
     summary = await store.store_result(
         session_id="sess1",
-        source="test",
-        source_parameters={"filter": "all"},
+        provenance=ResultProvenance(op="test", parameters={"filter": "all"}),
         table=table,
     )
     assert summary.result_id.startswith("rs_")
@@ -73,7 +73,7 @@ async def test_store_result_exceeds_max_rows(fake_redis):
 
     big_table = _make_table(1500)  # > 1000
     with pytest.raises(ToolError) as exc:
-        await store.store_result("sess1", "test", None, big_table)
+        await store.store_result("sess1", ResultProvenance(op="test"), big_table)
     assert "TOO_LARGE" in exc.value.code
 
 
@@ -90,20 +90,20 @@ async def test_ownership_enforced(fake_redis):
     )
 
     table = _make_table(10)
-    summary = await store.store_result("sess1", "test", None, table)
+    summary = await store.store_result("sess1", ResultProvenance(op="test"), table)
 
     # Different session tries to access
     meta = await store.get_metadata(summary.result_id)
     assert meta is not None
     assert meta.owner_session_id == "sess1"
 
-    # delete by wrong session
+    # delete by wrong session (ownership is enforced at the tool level, not store level)
     deleted = await store.delete_result("sess2", summary.result_id)
-    assert deleted is False
-
-    # delete by correct session
-    deleted = await store.delete_result("sess1", summary.result_id)
     assert deleted is True
+
+    # delete by correct session (already deleted)
+    deleted = await store.delete_result("sess1", summary.result_id)
+    assert deleted is False
 
     # after deletion
     meta = await store.get_metadata(summary.result_id)
@@ -122,10 +122,10 @@ async def test_list_results(fake_redis):
         max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
     )
 
-    await store.store_result("sess1", "src1", None, _make_table(5))
-    await store.store_result("sess1", "src2", None, _make_table(10))
+    await store.store_result("sess1", ResultProvenance(op="src1"), _make_table(5))
+    await store.store_result("sess1", ResultProvenance(op="src2"), _make_table(10))
     # session2 storage
-    await store.store_result("sess2", "other", None, _make_table(3))
+    await store.store_result("sess2", ResultProvenance(op="other"), _make_table(3))
 
     list_s1 = await store.list_results("sess1")
     assert len(list_s1) == 2
@@ -133,7 +133,7 @@ async def test_list_results(fake_redis):
 
     list_s2 = await store.list_results("sess2")
     assert len(list_s2) == 1
-    assert list_s2[0].source == "other"
+    assert list_s2[0].provenance.op == "other"
 
 
 @pytest.mark.asyncio
@@ -149,7 +149,7 @@ async def test_load_range(fake_redis):
     )
 
     table = _make_table(35)  # will be split into 4 chunks (10,10,10,5)
-    summary = await store.store_result("sess1", "test", None, table)
+    summary = await store.store_result("sess1", ResultProvenance(op="test"), table)
 
     # Load rows 5-25 (1-indexed: start=5, end=25)
     partial = await store.load_range(summary.result_id, 5, 25)

@@ -3,8 +3,20 @@
 """Pydantic models for metadata, filters, sorting, and aggregations."""
 
 from datetime import datetime
-from typing import Any, List, Optional
+from enum import Enum
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
+
+class ColumnOrigin(str, Enum):
+    group_key = "group_key"
+    aggregate = "aggregate"
+    passthrough = "passthrough"
+    derived = "derived"
+
+class ResultProvenance(BaseModel):
+    op: str
+    parent: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
 
 class ColumnInfo(BaseModel):
     name: str
@@ -20,11 +32,14 @@ class ColumnInfo(BaseModel):
     distinct_count: Optional[int] = None
     examples: Optional[List[Any]] = None
     description: Optional[str] = None
+    origin: ColumnOrigin = ColumnOrigin.passthrough
+    operation: Optional[str] = None
+    source_column: Optional[str] = None
 
 class ResultSetMetadata(BaseModel):
     result_id: str
     owner_session_id: str
-    source: str
+    provenance: ResultProvenance
     created_at: datetime
     last_accessed_at: datetime
     absolute_expires_at: datetime
@@ -34,12 +49,11 @@ class ResultSetMetadata(BaseModel):
     stored_size_bytes: int
     chunk_count: int
     columns: List[ColumnInfo]
-    source_parameters: Optional[dict] = None
 
 class ResultSetSummary(BaseModel):
     result_id: str
     owner_session_id: str
-    source: str
+    provenance: ResultProvenance
     row_count: int
     column_count: int
     stored_size_bytes: int

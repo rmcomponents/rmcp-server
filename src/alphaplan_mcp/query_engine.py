@@ -22,6 +22,7 @@ from .models import (
     FilterGroup,
     ResultSetMetadata,
     ResultSetSummary,
+    ResultProvenance,
     SortSpec,
 )
 from .result_store import ResultSetStore
@@ -406,15 +407,13 @@ class QueryEngine:
     async def _store_result_from_df(
         self,
         df: pl.DataFrame,
-        source: str,
-        source_parameters: dict,
+        provenance: ResultProvenance,
     ) -> ResultSetSummary:
         """Convert a Polars DataFrame to a PyArrow Table and store it as a new result set."""
         table = df.to_arrow()
         return await self.store.store_result(
             session_id=self.session_id,
-            source=source,
-            source_parameters=source_parameters,
+            provenance=provenance,
             table=table,
         )
 
@@ -425,7 +424,7 @@ class QueryEngine:
         # Return only safe fields (no owner_session_id)
         return {
             "result_id": meta.result_id,
-            "source": meta.source,
+            "provenance": meta.provenance.model_dump(),
             "row_count": meta.row_count,
             "column_count": meta.column_count,
             "stored_size_bytes": meta.stored_size_bytes,
@@ -543,12 +542,14 @@ class QueryEngine:
                 df = _apply_sort(df, sort)
             return await self._store_result_from_df(
                 df,
-                source="list_rows",
-                source_parameters={
-                    "source_result_id": result_id,
-                    "columns": columns,
-                    "sort": [s.model_dump() for s in sort] if sort else None,
-                },
+                provenance=ResultProvenance(
+                    op="list_rows",
+                    parent=result_id,
+                    parameters={
+                        "columns": columns,
+                        "sort": [s.model_dump() for s in sort] if sort else None,
+                    },
+                ),
             )
 
         if sort:
@@ -642,13 +643,15 @@ class QueryEngine:
         if store_result:
             return await self._store_result_from_df(
                 df,
-                source="query_rows",
-                source_parameters={
-                    "source_result_id": result_id,
-                    "filters": filters.model_dump() if filters else None,
-                    "columns": columns,
-                    "sort": [s.model_dump() for s in sort] if sort else None,
-                },
+                provenance=ResultProvenance(
+                    op="query_rows",
+                    parent=result_id,
+                    parameters={
+                        "filters": filters.model_dump() if filters else None,
+                        "columns": columns,
+                        "sort": [s.model_dump() for s in sort] if sort else None,
+                    },
+                ),
             )
 
         total_rows = df.height

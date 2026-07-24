@@ -10,7 +10,7 @@ from fastmcp import Context
 
 from ..database import fetch_parts_stream
 from ..errors import ToolError
-from ..models import ResultSetSummary
+from ..models import ResultSetSummary, ResultProvenance
 from ..result_store import ResultSetStore
 
 logger = logging.getLogger(__name__)
@@ -40,14 +40,17 @@ async def list_parts(
     )
 
     try:
-        summary = await store.store_result_stream(
-            session_id=ctx.session_id,
-            source="parts",
-            source_parameters={
+        provenance = ResultProvenance(
+            op="list_parts",
+            parameters={
                 "positive_filter_term": positive_filter_term,
                 "negative_filter_term": negative_filter_term,
                 "match_code": match_code
-            },
+            }
+        )
+        summary = await store.store_result_stream(
+            session_id=ctx.session_id,
+            provenance=provenance,
             batches=fetch_parts_stream(
                 positive_filter_term=positive_filter_term,
                 negative_filter_term=negative_filter_term,

@@ -7,7 +7,7 @@ import pytest_asyncio
 
 from alphaplan_mcp.config import Settings
 from alphaplan_mcp.errors import ToolError
-from alphaplan_mcp.models import FilterClause, FilterGroup, SortSpec, AggregationSpec, ResultSetSummary
+from alphaplan_mcp.models import FilterClause, FilterGroup, SortSpec, AggregationSpec, ResultSetSummary, ResultProvenance
 from alphaplan_mcp.query_engine import _build_filter_expr, _apply_sort, _df_to_rows, QueryEngine
 from alphaplan_mcp.result_store import ResultSetStore
 
@@ -128,7 +128,8 @@ async def setup_engine(fake_redis):
         "age": [25, 30, 35, 40, 45, None],
     })
     
-    summary = await store.store_result(session_id, "test_source", None, table)
+    provenance = ResultProvenance(op="test_source")
+    summary = await store.store_result(session_id, provenance, table)
     engine = QueryEngine(store, session_id)
     return engine, summary.result_id
 
@@ -205,7 +206,7 @@ class TestQueryEngine:
         res = await engine.list_rows(result_id, store_result=True)
         assert isinstance(res, ResultSetSummary)
         assert res.row_count == 6
-        assert res.source == "list_rows"
+        assert res.provenance.op == "list_rows"
         # Verify the new result set
         new_meta = await engine.store.get_metadata(res.result_id)
         assert new_meta is not None
@@ -216,7 +217,7 @@ class TestQueryEngine:
         engine, result_id = setup_engine
         # Create an empty result set first
         empty_table = pa.table({})
-        empty_summary = await engine.store.store_result("test_session", "test", None, empty_table)
+        empty_summary = await engine.store.store_result("test_session", ResultProvenance(op="test"), empty_table)
         res = await engine.list_rows(empty_summary.result_id, store_result=True)
         assert isinstance(res, ResultSetSummary)
         assert res.row_count == 0
@@ -238,7 +239,7 @@ class TestQueryEngine:
         res = await engine.query_rows(result_id, filters=filters, store_result=True)
         assert isinstance(res, ResultSetSummary)
         assert res.row_count == 4
-        assert res.source == "query_rows"
+        assert res.provenance.op == "query_rows"
 
     @pytest.mark.asyncio
     async def test_query_rows_store_result_empty(self, setup_engine):

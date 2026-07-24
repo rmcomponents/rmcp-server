@@ -10,7 +10,7 @@ from fastmcp import Context
 
 from ..database import fetch_customers_stream
 from ..errors import ToolError
-from ..models import ResultSetSummary
+from ..models import ResultSetSummary, ResultProvenance
 from ..result_store import ResultSetStore
 
 logger = logging.getLogger(__name__)
@@ -32,10 +32,13 @@ async def list_customers(
     logger.info("list_customers called with customer_name=%s", customer_name)
 
     try:
+        provenance = ResultProvenance(
+            op="list_customers",
+            parameters={"customer_name": customer_name}
+        )
         summary = await store.store_result_stream(
             session_id=ctx.session_id,
-            source="customers",
-            source_parameters={"customer_name": customer_name},
+            provenance=provenance,
             batches=fetch_customers_stream(customer_name),
         )
         return summary
