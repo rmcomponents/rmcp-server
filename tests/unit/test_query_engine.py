@@ -84,6 +84,23 @@ class TestFilterBuilding:
         with pytest.raises(ToolError, match="does not exist"):
             _build_filter_expr(FilterGroup(clauses=[FilterClause(column="nonexistent", operator="eq", value="x")]), schema)
 
+    def test_filter_string_column_with_numeric_value(self):
+        df = self.build_df()
+        schema = {c: df[c].dtype for c in df.columns}
+        # 'name' is Utf8, filter with integer 42
+        expr = _build_filter_expr(FilterGroup(clauses=[FilterClause(column="name", operator="eq", value=42)]), schema)
+        result = df.filter(expr)
+        assert result.height == 0
+
+    def test_filter_numeric_column_with_string_value(self):
+        df = self.build_df()
+        schema = {c: df[c].dtype for c in df.columns}
+        # 'value' is Int64, filter with string "20"
+        expr = _build_filter_expr(FilterGroup(clauses=[FilterClause(column="value", operator="eq", value="20")]), schema)
+        result = df.filter(expr)
+        assert result.height == 1
+        assert result["value"][0] == 20
+
 
 class TestSort:
     def test_single_column_asc(self):
@@ -519,3 +536,38 @@ class TestQueryEngine:
         )
         info = await engine.get_result_info(res.result_id)
         assert info["result_label"] == "Active counts"
+
+    @pytest.mark.asyncio
+    async def test_aggregate_with_filter_on_unprojected_column(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="avg", column="value", alias="avg_value")]
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.aggregate(result_id, aggregations=aggs, filters=filters)
+        # active=True values: 10, 30, 40, 60 -> avg = 35.0
+        assert res["aggregations"]["avg_value"] == 35.0
+
+    @pytest.mark.asyncio
+    async def test_group_by_with_filter_on_unprojected_column(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [AggregationSpec(operation="count", alias="count")]
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.group_by(result_id, group_columns=["name"], aggregations=aggs, filters=filters)
+        # active=True: Alice(2), Charlie(1), None(1) -> 3 groups
+        assert res["total_groups"] == 3
+
+    @pytest.mark.asyncio
+    async def test_distinct_values_with_filter_on_unprojected_column(self, setup_engine):
+        engine, result_id = setup_engine
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.distinct_values(result_id, column="name", filters=filters, include_null=True)
+        # active=True: Alice, Charlie, None -> 3 distinct
+        assert res["total_distinct"] == 3
+
+    @pytest.mark.asyncio
+    async def test_histogram_with_filter_on_unprojected_column(self, setup_engine):
+        engine, result_id = setup_engine
+        filters = FilterGroup(clauses=[FilterClause(column="active", operator="eq", value=True)])
+        res = await engine.histogram(result_id, column="value", bins=2, filters=filters)
+        # active=True: 10, 30, 40, 60 -> 4 rows
+        assert res["null_count"] == 0
+        assert sum(h["count"] for h in res["histogram"]) == 4

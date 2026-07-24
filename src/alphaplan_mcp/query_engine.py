@@ -54,6 +54,38 @@ def _py_value_to_polars(value: Any) -> Any:
     return value
 
 
+def _cast_value(value: Any, dtype: pl.DataType) -> Any:
+    """Attempt to cast a Python value to match a Polars column dtype."""
+    if value is None:
+        return None
+    if isinstance(value, list):
+        return [_cast_value(v, dtype) for v in value]
+    
+    if dtype in (pl.Utf8, pl.Categorical):
+        if not isinstance(value, str):
+            return str(value)
+    elif dtype in (pl.Int8, pl.Int16, pl.Int32, pl.Int64, pl.UInt8, pl.UInt16, pl.UInt32, pl.UInt64):
+        if isinstance(value, str):
+            try:
+                return int(value)
+            except ValueError:
+                raise tool_error("TYPE_MISMATCH", f"Cannot convert '{value}' to integer for column comparison")
+    elif dtype in (pl.Float32, pl.Float64):
+        if isinstance(value, str):
+            try:
+                return float(value)
+            except ValueError:
+                raise tool_error("TYPE_MISMATCH", f"Cannot convert '{value}' to float for column comparison")
+    elif dtype == pl.Boolean:
+        if isinstance(value, str):
+            if value.lower() in ("true", "1"):
+                return True
+            elif value.lower() in ("false", "0"):
+                return False
+            raise tool_error("TYPE_MISMATCH", f"Cannot convert '{value}' to boolean for column comparison")
+    return value
+
+
 def _build_filter_expr(filter_group: FilterGroup, schema: Dict[str, pl.DataType]) -> pl.Expr:
     """Translate a FilterGroup into a Polars expression."""
     if not filter_group.clauses:
@@ -93,7 +125,7 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
                          {"available_columns": list(schema.keys())})
     dtype = schema[col]
     op = clause.operator.lower()
-    value = clause.value
+    value = _cast_value(clause.value, dtype)
     case_sensitive = clause.case_sensitive
 
     col_expr = pl.col(col)
@@ -770,7 +802,11 @@ class QueryEngine:
         limit = min(limit, self.settings.TOOL_MAX_DISTINCT_VALUES)
         meta = await self._ensure_owned(result_id)
         parent_meta = await self.store.get_metadata(result_id)
-        df = await self._load_full_df(result_id, columns=[column])
+        needed_cols = {column}
+        if filters and filters.clauses:
+            for clause in filters.clauses:
+                needed_cols.add(clause.column)
+        df = await self._load_full_df(result_id, columns=list(needed_cols))
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
             mask = _build_filter_expr(filters, schema)
@@ -855,6 +891,9 @@ class QueryEngine:
         for agg in aggregations:
             if agg.column:
                 needed_cols.add(agg.column)
+        if filters and filters.clauses:
+            for clause in filters.clauses:
+                needed_cols.add(clause.column)
         df = await self._load_full_df(result_id, columns=list(needed_cols) if needed_cols else None)
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
@@ -924,6 +963,9 @@ class QueryEngine:
         for agg in aggregations:
             if agg.column:
                 needed_cols.add(agg.column)
+        if filters and filters.clauses:
+            for clause in filters.clauses:
+                needed_cols.add(clause.column)
         df = await self._load_full_df(result_id, columns=list(needed_cols))
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
@@ -1016,7 +1058,11 @@ class QueryEngine:
         bins = min(bins, 50)
         meta = await self._ensure_owned(result_id)
         parent_meta = await self.store.get_metadata(result_id)
-        df = await self._load_full_df(result_id, columns=[column])
+        needed_cols = {column}
+        if filters and filters.clauses:
+            for clause in filters.clauses:
+                needed_cols.add(clause.column)
+        df = await self._load_full_df(result_id, columns=list(needed_cols))
         schema = {name: df[name].dtype for name in df.columns}
         if filters and filters.clauses:
             mask = _build_filter_expr(filters, schema)
