@@ -320,6 +320,26 @@ def _build_agg_exprs(aggregations: List[AggregationSpec]) -> List[pl.Expr]:
     return agg_exprs
 
 
+_ALIAS_REGEX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _validate_aliases(aggregations: List[AggregationSpec], group_columns: Optional[List[str]] = None) -> None:
+    seen = set(group_columns) if group_columns else set()
+    for agg in aggregations:
+        alias = agg.alias
+        if not _ALIAS_REGEX.match(alias):
+            raise tool_error(
+                "INVALID_ALIAS",
+                f"Invalid alias '{alias}'. Must match ^[A-Za-z_][A-Za-z0-9_]*$ and not contain whitespace, dots, or quotes."
+            )
+        if alias in seen:
+            raise tool_error(
+                "ALIAS_COLLISION",
+                f"Alias '{alias}' collides with a group column or another alias."
+            )
+        seen.add(alias)
+
+
 def _format_paginated_result(
     result_id: str, 
     df: pl.DataFrame, 
@@ -737,6 +757,7 @@ class QueryEngine:
         result_label: Optional[str] = None,
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         meta = await self._ensure_owned(result_id)
+        _validate_aliases(aggregations)
         # Determine needed columns
         needed_cols = set()
         for agg in aggregations:
@@ -784,6 +805,7 @@ class QueryEngine:
         if len(group_columns) > self.settings.TOOL_MAX_GROUP_COLUMNS:
             raise tool_error("INVALID_ARGUMENT", f"Too many group columns (max {self.settings.TOOL_MAX_GROUP_COLUMNS}).")
         meta = await self._ensure_owned(result_id)
+        _validate_aliases(aggregations, group_columns)
         # Determine needed columns
         needed_cols = set(group_columns)
         for agg in aggregations:
@@ -890,9 +912,24 @@ class QueryEngine:
             value_counts = non_null.group_by(column).agg(pl.len().alias("count"))
             value_counts = value_counts.sort("count", descending=True)
             
+            total_distinct = value_counts.height
+            
+            if total_distinct > max_bins:
+                top_values = value_counts.slice(0, max_bins)
+                other_count = value_counts.slice(max_bins)["count"].sum()
+                other_row = pl.DataFrame({
+                    column: [None],
+                    "count": [other_count],
+                    "is_other": [True]
+                })
+                top_values = top_values.with_columns(pl.lit(False).alias("is_other"))
+                final_df = pl.concat([top_values, other_row], how="vertical_relaxed")
+            else:
+                final_df = value_counts.with_columns(pl.lit(False).alias("is_other"))
+                
             if store_result:
                 return await self._store_result_from_df(
-                    value_counts,
+                    final_df,
                     provenance=ResultProvenance(
                         op="histogram",
                         parent=result_id,
@@ -904,19 +941,13 @@ class QueryEngine:
                     ),
                 )
 
-            total_distinct = value_counts.height
-            top_values = value_counts.slice(0, max_bins)
-            
             histogram = []
-            for row in top_values.iter_rows(named=True):
+            for row in final_df.iter_rows(named=True):
                 histogram.append({
                     "value": _normalize_value(row[column]),
                     "count": row["count"],
+                    "is_other": row["is_other"]
                 })
-                
-            other_count = 0
-            if total_distinct > max_bins:
-                other_count = non_null.height - top_values["count"].sum()
                 
             return {
                 "result_id": result_id,
@@ -924,7 +955,6 @@ class QueryEngine:
                 "bins": len(histogram),
                 "null_count": null_count,
                 "histogram": histogram,
-                "other_count": other_count,
                 "total_distinct": total_distinct,
             }
         else:
@@ -961,6 +991,16 @@ class QueryEngine:
                     f"Column '{column}' is not numeric and cannot be used for histograms."
                 )
             
+            # Rename and add required columns
+            hist_df = hist_df.rename({"breakpoint": "bin_upper"})
+            hist_df = hist_df.with_columns([
+                pl.col("bin_upper").shift(1).fill_null(float("-inf")).alias("bin_lower"),
+                pl.arange(0, hist_df.height).alias("bin_index"),
+                pl.format("[{}, {}]", pl.col("bin_lower"), pl.col("bin_upper")).alias("bin_label")
+            ])
+            # Reorder columns
+            hist_df = hist_df.select(["bin_index", "bin_lower", "bin_upper", "bin_label", "count"])
+            
             if store_result:
                 return await self._store_result_from_df(
                     hist_df,
@@ -978,7 +1018,10 @@ class QueryEngine:
             histogram = []
             for row in hist_df.iter_rows(named=True):
                 histogram.append({
-                    "upper_bound": _normalize_value(row["breakpoint"]),
+                    "bin_index": row["bin_index"],
+                    "bin_lower": _normalize_value(row["bin_lower"]),
+                    "bin_upper": _normalize_value(row["bin_upper"]),
+                    "bin_label": row["bin_label"],
                     "count": row["count"],
                 })
             return {
