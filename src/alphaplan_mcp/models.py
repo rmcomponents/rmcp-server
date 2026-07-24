@@ -40,6 +40,10 @@ class ResultSetMetadata(BaseModel):
     result_id: str
     owner_session_id: str
     provenance: ResultProvenance
+    source: Optional[Dict[str, Any]] = None
+    grain: Optional[str] = None
+    source_row_count: Optional[int] = None
+    result_label: Optional[str] = None
     created_at: datetime
     last_accessed_at: datetime
     absolute_expires_at: datetime
@@ -54,6 +58,10 @@ class ResultSetSummary(BaseModel):
     result_id: str
     owner_session_id: str
     provenance: ResultProvenance
+    source: Optional[Dict[str, Any]] = None
+    grain: Optional[str] = None
+    source_row_count: Optional[int] = None
+    result_label: Optional[str] = None
     row_count: int
     column_count: int
     stored_size_bytes: int
