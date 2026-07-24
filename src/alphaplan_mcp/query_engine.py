@@ -571,6 +571,18 @@ class QueryEngine:
             df = await self._load_full_df(result_id, columns=columns)
             if sort:
                 df = _apply_sort(df, sort)
+            parent_meta = await self.store.get_metadata(result_id)
+            cols_info = []
+            for c in df.columns:
+                p_col = next((pc for pc in parent_meta.columns if pc.name == c), None)
+                p_type = p_col.type if p_col else "string"
+                if p_type == "large_string":
+                    p_type = "string"
+                cols_info.append(ColumnInfo(
+                    name=c, type=p_type, null_count=0, non_null_count=0,
+                    description=p_col.description if p_col else None,
+                    origin=ColumnOrigin.passthrough, source_column=c
+                ))
             return await self._store_result_from_df(
                 df,
                 provenance=ResultProvenance(
@@ -581,6 +593,10 @@ class QueryEngine:
                         "sort": [s.model_dump() for s in sort] if sort else None,
                     },
                 ),
+                columns=cols_info,
+                source={"op": "list_rows", "parent": result_id, "columns": columns, "sort": [s.model_dump() for s in sort] if sort else None},
+                grain="one row per source row",
+                source_row_count=parent_meta.row_count,
             )
 
         if sort:
@@ -672,6 +688,18 @@ class QueryEngine:
             df = df.select(columns)
             
         if store_result:
+            parent_meta = await self.store.get_metadata(result_id)
+            cols_info = []
+            for c in df.columns:
+                p_col = next((pc for pc in parent_meta.columns if pc.name == c), None)
+                p_type = p_col.type if p_col else "string"
+                if p_type == "large_string":
+                    p_type = "string"
+                cols_info.append(ColumnInfo(
+                    name=c, type=p_type, null_count=0, non_null_count=0,
+                    description=p_col.description if p_col else None,
+                    origin=ColumnOrigin.passthrough, source_column=c
+                ))
             return await self._store_result_from_df(
                 df,
                 provenance=ResultProvenance(
@@ -683,6 +711,10 @@ class QueryEngine:
                         "sort": [s.model_dump() for s in sort] if sort else None,
                     },
                 ),
+                columns=cols_info,
+                source={"op": "query_rows", "parent": result_id, "filters": filters.model_dump() if filters else None, "columns": columns, "sort": [s.model_dump() for s in sort] if sort else None},
+                grain="one row per source row",
+                source_row_count=parent_meta.row_count,
             )
 
         total_rows = df.height
