@@ -450,18 +450,39 @@ class QueryEngine:
 
     # ---------- Tool helpers that will be called by MCP tools ----------
 
+    def _get_description(self, col_info: ColumnInfo, meta: ResultSetMetadata) -> Optional[str]:
+        if col_info.description:
+            return col_info.description
+        op = meta.provenance.op
+        if col_info.origin == ColumnOrigin.group_key:
+            return f"{op} group key: {col_info.source_column}"
+        elif col_info.origin == ColumnOrigin.aggregate:
+            return f"{op} aggregation: {col_info.operation} of {col_info.source_column}"
+        elif col_info.origin == ColumnOrigin.derived:
+            return f"{op} derived: {col_info.name}"
+        elif col_info.origin == ColumnOrigin.passthrough:
+            return f"{op} passthrough: {col_info.source_column}"
+        return None
+
     async def get_result_info(self, result_id: str) -> Dict[str, Any]:
         meta = await self._ensure_owned(result_id)
         # Return only safe fields (no owner_session_id)
         return {
             "result_id": meta.result_id,
             "provenance": meta.provenance.model_dump(),
+            "source": meta.source,
+            "grain": meta.grain,
+            "source_row_count": meta.source_row_count,
+            "result_label": meta.result_label,
             "row_count": meta.row_count,
             "column_count": meta.column_count,
             "stored_size_bytes": meta.stored_size_bytes,
             "created_at": meta.created_at.isoformat(),
             "expires_at": meta.absolute_expires_at.isoformat(),
-            "columns": [c.model_dump() for c in meta.columns],
+            "columns": [
+                {**c.model_dump(), "description": self._get_description(c, meta)}
+                for c in meta.columns
+            ],
         }
 
 
@@ -495,7 +516,7 @@ class QueryEngine:
                 col_entry = {
                     "name": col_info.name,
                     "type": col_info.type,
-                    "description": col_info.description,
+                    "description": self._get_description(col_info, meta),
                     "null_count": col_info.null_count,
                     "non_null_count": col_info.non_null_count,
                     "min": col_info.min,
@@ -538,7 +559,7 @@ class QueryEngine:
                 result.append({
                     "name": col_info.name,
                     "type": col_info.type,
-                    "description": col_info.description,
+                    "description": self._get_description(col_info, meta),
                     "null_count": col_info.null_count,
                     "non_null_count": col_info.non_null_count,
                     "min": col_info.min,
@@ -549,7 +570,12 @@ class QueryEngine:
                     "max_length": col_info.max_length,
                 })
 
-        return {"columns": result}
+        return {
+            "result_id": result_id,
+            "grain": meta.grain,
+            "source_row_count": meta.source_row_count,
+            "columns": result,
+        }
 
     async def list_rows(
         self,
