@@ -266,3 +266,7 @@ When `store_result=true` is passed to `list_rows`, `query_rows`, `group_by`, `di
 ### 9.8 Analytics Operate on the Full Parent Set
 `count_rows`, `aggregate`, `group_by`, `distinct_values`, and `histogram` apply their `filters` directly to the full parent result set. You do not need to materialize a subset first to compute metrics. `result_label` is purely organizational and does not affect data.
 
+## 10. Tool: `list_parts`
+
+- `sample_n` (optional int): If provided, instructs the SQL server to return a random sample of approximately `n` rows using `TABLESAMPLE`. This is highly performant but applies *before* any filters (`positive_filter_term`, etc.), so the final row count may be less than `n` if filters are also applied. If omitted, all matching rows are returned.
+

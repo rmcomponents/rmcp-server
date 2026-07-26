@@ -153,6 +153,7 @@ async def fetch_parts_stream(
     positive_filter_term: Optional[str] = None,
     negative_filter_term: Optional[str] = "TCC%",
     match_code: Optional[str] = None,
+    sample_n: Optional[int] = None,
 ) -> AsyncGenerator[pa.RecordBatch, None]:
     """
     Asynchronously yield part rows as Arrow record batches.
@@ -171,7 +172,7 @@ async def fetch_parts_stream(
             conn = build_connection()
             cursor = conn.cursor()
             
-            query = """
+            base_query = """
                 SELECT 
                     A.ArtikelNummer, 
                     A.Groesse AS RollengroesseZoll,
@@ -184,12 +185,21 @@ async def fetch_parts_stream(
                     A.Wiederbeschaffungszeit AS Wiederbeschaffungszeit_Tage,
                     WG.Bezeichnung AS WarenGruppe,
                     WG.WarenGruppenNummer AS WarenGruppenNummer
-                FROM ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK)
+                FROM {from_clause}
                 JOIN ALPHAPLAN_EchtDaten.dbo.Adressen L WITH (NOLOCK) ON L.AdressenID = A.HauptLieferantenAdressenID
                 JOIN ALPHAPLAN_EchtDaten.dbo.WarenGruppen WG WITH (NOLOCK) ON WG.WarenGruppenID = A.WarenGruppenID
                 WHERE A.IstArchiviert = 0
                 AND A.ArtikelID > 0
             """
+            if sample_n is not None:
+                # TABLESAMPLE must be applied directly to the physical table.
+                # It conflicts with WITH (NOLOCK), so we omit the hint for the sampled table.
+                from_clause = f"ALPHAPLAN_EchtDaten.dbo.Artikel A TABLESAMPLE ({sample_n} ROWS)"
+            else:
+                from_clause = "ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK)"
+            
+            query = base_query.format(from_clause=from_clause)
+            
             params = []
             
             if positive_filter_term:

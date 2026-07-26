@@ -19,6 +19,7 @@ async def list_parts(
     positive_filter_term: Optional[str] = None,
     negative_filter_term: Optional[str] = "TCC%",
     match_code: Optional[str] = None,
+    sample_n: Optional[int] = None,
     ctx: Context = None,
 ) -> Union[ResultSetSummary, Dict[str, Any]]:
     """
@@ -29,14 +30,15 @@ async def list_parts(
     - `positive_filter_term`: Optional. If provided, only fetch parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard (e.g., `ABC%`).
     - `negative_filter_term`: Optional, defaults to 'TCC%'. Excludes parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard.
     - `match_code`: Optional. If provided, filters parts where `MatchCode` contains this string (LIKE '%match_code%').
+    - `sample_n`: Optional. If provided, instructs SQL Server to return a random sample of approximately `n` rows using `TABLESAMPLE`. This is highly performant but applies *before* any filters, so the final row count may be less than `n` if filters are also applied. If omitted, all matching rows are returned.
     
     Filters can be combined. The result set is stored in Redis and managed identically to `list_customers`.
     """
     store: ResultSetStore = ctx.fastmcp.result_store
 
     logger.info(
-        "list_parts called with positive_filter_term=%s, negative_filter_term=%s, match_code=%s",
-        positive_filter_term, negative_filter_term, match_code
+        "list_parts called with positive_filter_term=%s, negative_filter_term=%s, match_code=%s, sample_n=%s",
+        positive_filter_term, negative_filter_term, match_code, sample_n
     )
 
     try:
@@ -45,7 +47,8 @@ async def list_parts(
             parameters={
                 "positive_filter_term": positive_filter_term,
                 "negative_filter_term": negative_filter_term,
-                "match_code": match_code
+                "match_code": match_code,
+                "sample_n": sample_n
             }
         )
         summary = await store.store_result_stream(
@@ -54,7 +57,8 @@ async def list_parts(
             batches=fetch_parts_stream(
                 positive_filter_term=positive_filter_term,
                 negative_filter_term=negative_filter_term,
-                match_code=match_code
+                match_code=match_code,
+                sample_n=sample_n
             ),
         )
         return summary
