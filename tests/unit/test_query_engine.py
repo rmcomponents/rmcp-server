@@ -314,8 +314,8 @@ class TestQueryEngine:
     async def test_list_rows_sort(self, setup_engine):
         engine, result_id = setup_engine
         res = await engine.list_rows(result_id, sort=[SortSpec(column="value", direction="desc")], limit=2)
-        assert res["rows"][0]["value"] == 60
-        assert res["rows"][1]["value"] == 50
+        assert res["data"][0]["value"] == 60
+        assert res["data"][1]["value"] == 50
 
     @pytest.mark.asyncio
     async def test_count_rows(self, setup_engine):

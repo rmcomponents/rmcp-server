@@ -1,6 +1,7 @@
 """Mouser part search tool."""
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
 
@@ -11,7 +12,7 @@ from ..apis.mouser.cache import build_cache_key, cache_metadata, default_cache
 from ..apis.mouser.parts_extraction import extract_purchasing_parts
 from ..errors import ToolError, tool_error
 
-logger = None  # Will be set by FastMCP
+logger = logging.getLogger(__name__)
 
 
 async def search_mouser_parts(

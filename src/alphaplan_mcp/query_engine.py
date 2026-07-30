@@ -723,7 +723,6 @@ class QueryEngine:
             base_response["format"] = "json"
             base_response["encoding"] = "plain"
             base_response["data"] = rows
-            base_response["rows"] = rows  # Add this line
             base_response["returned"] = len(rows)
             return base_response
 

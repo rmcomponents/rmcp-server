@@ -21,13 +21,13 @@ async def test_search_mouser_parts_happy_path():
     from alphaplan_mcp.apis.mouser.cache import CachedEntry
     
     # Mock the API and cache
-    with patch("alphaplan_mcp.tools.mouser.search_by_part_number") as mock_api, \
+    with patch("alphaplan_mcp.tools.mouser.search_by_part_number", new_callable=AsyncMock) as mock_api, \
          patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache, \
          patch("alphaplan_mcp.tools.mouser.extract_purchasing_parts") as mock_extract:
         
-        mock_api.return_value = AsyncMock(return_value=FIXTURE)
-        mock_cache.get.return_value = None
-        mock_cache.set.return_value = AsyncMock()
+        mock_api.return_value = FIXTURE
+        mock_cache.get = AsyncMock(return_value=None)
+        mock_cache.set = AsyncMock()
         mock_extract.return_value = FIXTURE.get("SearchResults", {}).get("Parts", [])
         
         result = await search_mouser_parts("ABC123")
@@ -59,13 +59,13 @@ async def test_search_mouser_parts_happy_path():
 @pytest.mark.asyncio
 async def test_search_mouser_parts_custom_ttl():
     """Custom TTL is reflected in metadata."""
-    with patch("alphaplan_mcp.tools.mouser.search_by_part_number") as mock_api, \
+    with patch("alphaplan_mcp.tools.mouser.search_by_part_number", new_callable=AsyncMock) as mock_api, \
          patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache, \
          patch("alphaplan_mcp.tools.mouser.extract_purchasing_parts") as mock_extract:
         
-        mock_api.return_value = AsyncMock(return_value=FIXTURE)
-        mock_cache.get.return_value = None
-        mock_cache.set.return_value = AsyncMock()
+        mock_api.return_value = FIXTURE
+        mock_cache.get = AsyncMock(return_value=None)
+        mock_cache.set = AsyncMock()
         mock_extract.return_value = []
         
         result = await search_mouser_parts("ABC123", cache_ttl_override_hours=4.0)
@@ -76,13 +76,13 @@ async def test_search_mouser_parts_custom_ttl():
 @pytest.mark.asyncio
 async def test_search_mouser_parts_caching_disabled():
     """caching=False skips cache operations."""
-    with patch("alphaplan_mcp.tools.mouser.search_by_part_number") as mock_api, \
+    with patch("alphaplan_mcp.tools.mouser.search_by_part_number", new_callable=AsyncMock) as mock_api, \
          patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache, \
          patch("alphaplan_mcp.tools.mouser.extract_purchasing_parts") as mock_extract:
         
-        mock_api.return_value = AsyncMock(return_value=FIXTURE)
-        mock_cache.get.return_value = None
-        mock_cache.set.return_value = AsyncMock()
+        mock_api.return_value = FIXTURE
+        mock_cache.get = AsyncMock(return_value=None)
+        mock_cache.set = AsyncMock()
         mock_extract.return_value = []
         
         result = await search_mouser_parts("ABC123", caching=False)
@@ -112,8 +112,8 @@ async def test_search_mouser_parts_cache_hit():
          patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache, \
          patch("alphaplan_mcp.tools.mouser.extract_purchasing_parts") as mock_extract:
         
-        mock_cache.get.return_value = entry
-        mock_cache.set.return_value = AsyncMock()
+        mock_cache.get = AsyncMock(return_value=entry)
+        mock_cache.set = AsyncMock()
         mock_extract.return_value = cached_parts
         
         result = await search_mouser_parts("ABC123")

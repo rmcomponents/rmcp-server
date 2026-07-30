@@ -11,6 +11,10 @@ import pytest
 from alphaplan_mcp.apis.mouser.api import search_by_part_number
 from alphaplan_mcp.errors import ToolError
 
+@pytest.fixture(autouse=True)
+def mock_mouser_api_key(monkeypatch):
+    monkeypatch.setattr("alphaplan_mcp.apis.mouser.api.settings.MOUSER_API_KEY", "test")
+
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "src" / "alphaplan_mcp" / "apis" / "mouser" / "example-response.json").read_text()
 )
@@ -53,7 +57,7 @@ async def test_search_by_part_number_empty_mpn():
 @pytest.mark.asyncio
 async def test_search_by_part_number_no_api_key(monkeypatch):
     """Empty API key raises MOUSER_NOT_CONFIGURED."""
-    monkeypatch.setenv("MOUSER_API_KEY", "")
+    monkeypatch.setattr("alphaplan_mcp.apis.mouser.api.settings.MOUSER_API_KEY", "")
     
     handler = build_mock_handler(response=FIXTURE)
     client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
