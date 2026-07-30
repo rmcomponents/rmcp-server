@@ -14,7 +14,7 @@ class ToolError(Exception):
         self.code = code
         self.message = message
         self.details = details
-        super().__init__(self.message)
+        super().__init__(f"{code}: {message}")
 
     def to_dict(self) -> Dict[str, Any]:
         resp = {"error": self.code, "message": self.message}

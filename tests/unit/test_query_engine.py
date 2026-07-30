@@ -133,6 +133,102 @@ class TestRowConversion:
         assert rows[0]["none"] is None
 
 
+class TestListRowsFormats:
+    @pytest.mark.asyncio
+    async def test_invalid_format(self, setup_engine):
+        engine, result_id = setup_engine
+        with pytest.raises(ToolError, match="INVALID_FORMAT"):
+            await engine.list_rows(result_id, format="parquet")
+
+    @pytest.mark.asyncio
+    async def test_invalid_encoding(self, setup_engine):
+        engine, result_id = setup_engine
+        with pytest.raises(ToolError, match="INVALID_ENCODING"):
+            await engine.list_rows(result_id, encoding="zstd")
+
+    @pytest.mark.asyncio
+    async def test_paging_fields_json_plain(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, limit=2)
+        assert res["offset"] == 0
+        assert res["limit"] == 2
+        assert res["has_more"] is True
+        assert res["next_offset"] == 2
+        assert isinstance(res["data"], list)
+
+    @pytest.mark.asyncio
+    async def test_paging_fields_csv_plain(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, limit=2, format="csv")
+        assert res["offset"] == 0
+        assert res["limit"] == 2
+        assert res["has_more"] is True
+        assert res["next_offset"] == 2
+        assert isinstance(res["data"], str)
+
+    @pytest.mark.asyncio
+    async def test_paging_fields_json_gzip(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, limit=2, encoding="gzip+base64")
+        assert res["offset"] == 0
+        assert res["limit"] == 2
+        assert res["has_more"] is True
+        assert res["next_offset"] == 2
+        assert "data" in res
+        assert "uncompressed_bytes" in res
+        assert "sha256" in res
+
+    @pytest.mark.asyncio
+    async def test_round_to_0_casts_to_int(self, setup_engine_float):
+        engine, result_id = setup_engine_float
+        res = await engine.list_rows(result_id, round_to=0)
+        assert isinstance(res["data"][0]["value"], int)
+        assert res["data"][0]["value"] == 11
+
+    @pytest.mark.asyncio
+    async def test_stable_sort_group_by(self, fake_redis):
+        store = ResultSetStore(fake_redis)
+        session_id = "test_session"
+        table = pa.table({
+            "group_col": ["A", "A", "B", "B"],
+            "value": [1, 1, 2, 2],
+            "name": ["Z", "A", "Y", "B"],
+        })
+        provenance = ResultProvenance(op="group_by", parameters={"group_columns": ["group_col"]})
+        summary = await store.store_result(session_id, provenance, table)
+        engine = QueryEngine(store, session_id)
+        res = await engine.list_rows(
+            summary.result_id,
+            sort=[SortSpec(column="value", direction="asc")],
+            stable_sort=True
+        )
+        # Within same value, should be ordered by group_col then name
+        names = [r["name"] for r in res["data"]]
+        assert names == ["A", "Z", "B", "Y"]
+
+    @pytest.mark.asyncio
+    async def test_fallback_to_plain(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, limit=1, encoding="gzip+base64")
+        assert res["encoding"] == "plain"
+        assert isinstance(res["data"], list)
+
+    @pytest.mark.asyncio
+    async def test_csv_escaping(self, fake_redis):
+        store = ResultSetStore(fake_redis)
+        session_id = "test_session"
+        table = pa.table({
+            "text": ['comma, here', 'quote " here', 'newline\n here'],
+        })
+        provenance = ResultProvenance(op="test_source")
+        summary = await store.store_result(session_id, provenance, table)
+        engine = QueryEngine(store, session_id)
+        res = await engine.list_rows(summary.result_id, format="csv")
+        assert '"comma, here"' in res["data"]
+        assert '"quote "" here"' in res["data"]
+        assert '"newline\n here"' in res["data"]
+
+
 @pytest_asyncio.fixture
 async def setup_engine(fake_redis):
     store = ResultSetStore(fake_redis)
@@ -145,6 +241,22 @@ async def setup_engine(fake_redis):
         "age": [25, 30, 35, 40, 45, None],
     })
     
+    provenance = ResultProvenance(op="test_source")
+    summary = await store.store_result(session_id, provenance, table)
+    engine = QueryEngine(store, session_id)
+    return engine, summary.result_id
+
+
+@pytest_asyncio.fixture
+async def setup_engine_float(fake_redis):
+    store = ResultSetStore(fake_redis)
+    session_id = "test_session"
+    table = pa.table({
+        "name": ["Alice", "bob", "Alice", "Charlie", "Bob", None],
+        "value": [10.5, 20.5, 30.5, 40.5, 50.5, 60.5],
+        "active": [True, False, True, True, False, True],
+        "age": [25, 30, 35, 40, 45, None],
+    })
     provenance = ResultProvenance(op="test_source")
     summary = await store.store_result(session_id, provenance, table)
     engine = QueryEngine(store, session_id)

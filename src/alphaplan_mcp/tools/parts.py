@@ -84,38 +84,34 @@ async def list_part_stats(
     - `sales_purchasing`: Optional. 'V' for Sales (Verkauf), 'E' for Purchasing (Einkauf). If omitted, returns both.
     - `limit`: Optional. If provided, returns up to this many rows directly in the response. If omitted, stores the full result set in Redis and returns a summary.
     """
-    try:
-        if year is None:
-            raise ToolError(code="invalid_parameters", message="The 'year' parameter is mandatory.")
+    if year is None:
+        raise ToolError(code="invalid_parameters", message="The 'year' parameter is mandatory.")
 
-        logger.info(
-            "list_part_stats called with mpn=%s, year=%s, sales_purchasing=%s, limit=%s",
-            mpn, year, sales_purchasing, limit
+    logger.info(
+        "list_part_stats called with mpn=%s, year=%s, sales_purchasing=%s, limit=%s",
+        mpn, year, sales_purchasing, limit
+    )
+
+    if limit is not None:
+        rows = []
+        async for batch in fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing, limit=limit):
+            rows.extend(batch.to_pylist())
+            if len(rows) >= limit:
+                return rows[:limit]
+        return rows
+    else:
+        store: ResultSetStore = ctx.fastmcp.result_store
+        provenance = ResultProvenance(
+            op="list_part_stats",
+            parameters={
+                "mpn": mpn,
+                "year": year,
+                "sales_purchasing": sales_purchasing
+            }
         )
-
-        if limit is not None:
-            rows = []
-            async for batch in fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing, limit=limit):
-                rows.extend(batch.to_pylist())
-                if len(rows) >= limit:
-                    return rows[:limit]
-            return rows
-        else:
-            store: ResultSetStore = ctx.fastmcp.result_store
-            provenance = ResultProvenance(
-                op="list_part_stats",
-                parameters={
-                    "mpn": mpn,
-                    "year": year,
-                    "sales_purchasing": sales_purchasing
-                }
-            )
-            summary = await store.store_result_stream(
-                session_id=ctx.session_id,
-                provenance=provenance,
-                batches=fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing),
-            )
-            return summary
-    except ToolError as e:
-        logger.error("ToolError in list_part_stats: %s", e.message)
-        return e.to_dict()
+        summary = await store.store_result_stream(
+            session_id=ctx.session_id,
+            provenance=provenance,
+            batches=fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing),
+        )
+        return summary

@@ -56,13 +56,25 @@ async def list_rows(
     offset: int = 0,
     sort: Optional[List[SortSpec]] = None,
     store_result: bool = False,
+    format: str = "json",
+    encoding: str = "plain",
+    round_to: Optional[int] = None,
     ctx: Context = None,
 ) -> Union[Dict[str, Any], ResultSetSummary]:
-    """Return a subset of rows from a stored result set."""
+    """Return a subset of rows from a stored result set.
+    
+    Parameters:
+    - `format`: Output format, either "json" (default) or "csv".
+    - `encoding`: Encoding of the output, either "plain" (default) or "gzip+base64".
+    - `round_to`: Optional. If provided, rounds numeric columns to this many decimal places.
+    """
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
-        return await engine.list_rows(result_id, columns, limit, offset, sort, store_result)
+        return await engine.list_rows(
+            result_id, columns, limit, offset, sort, store_result, 
+            format, encoding, round_to
+        )
     except ToolError as e:
         return e.to_dict()
     except Exception as e:

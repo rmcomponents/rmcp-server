@@ -3,6 +3,9 @@
 # without constructing arbitrary SQL.
 """Polars‑based query engine for stored result sets."""
 
+import base64
+import gzip
+import json
 import logging
 import math
 import re
@@ -605,6 +608,10 @@ class QueryEngine:
         offset: int = 0,
         sort: Optional[List[SortSpec]] = None,
         store_result: bool = False,
+        format: str = "json",
+        encoding: str = "plain",
+        round_to: Optional[int] = None,
+        stable_sort: bool = True,
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit = min(limit, self.settings.TOOL_MAX_ROWS)
         if offset < 0:
@@ -613,10 +620,34 @@ class QueryEngine:
             limit = 0
         meta = await self._ensure_owned(result_id)
 
+        # Validate format and encoding
+        if format not in {"json", "csv"}:
+            raise tool_error("INVALID_FORMAT", f"Unsupported format '{format}'. Must be 'json' or 'csv'.")
+        if encoding not in {"plain", "gzip+base64"}:
+            raise tool_error("INVALID_ENCODING", f"Unsupported encoding '{encoding}'. Must be 'plain' or 'gzip+base64'.")
+
+        # Determine stable sort tie-breakers
+        tie_breaker_cols = []
+        use_row_index_fallback = False
+        if stable_sort and sort:
+            sort_cols = {s.column for s in sort} if sort else set()
+            # Add all other columns as tie-breakers to ensure deterministic order
+            for col in [c.name for c in meta.columns]:
+                if col not in sort_cols:
+                    tie_breaker_cols.append(col)
+            
+            # Append tie-breakers to sort list
+            for col in tie_breaker_cols:
+                sort.append(SortSpec(column=col, direction="asc", nulls="last"))
+
         if store_result:
             df = await self._load_full_df(result_id, columns=columns)
+            if use_row_index_fallback:
+                df = df.with_row_index("__row_idx__")
             if sort:
                 df = _apply_sort(df, sort)
+            if use_row_index_fallback:
+                df = df.drop("__row_idx__")
             # Do not slice by limit/offset when storing the result
             parent_meta = await self.store.get_metadata(result_id)
             cols_info = []
@@ -646,41 +677,106 @@ class QueryEngine:
                 source_row_count=parent_meta.row_count,
             )
 
-        if sort:
+        if sort or use_row_index_fallback:
             # Load full table, sort, then slice
             df = await self._load_full_df(result_id, columns=columns)
+            if use_row_index_fallback:
+                df = df.with_row_index("__row_idx__")
             df = _apply_sort(df, sort)
+            if use_row_index_fallback:
+                df = df.drop("__row_idx__")
             total_rows = df.height
-            return _format_paginated_result(result_id, df, offset, limit, total_rows)
+            df_slice = df.slice(offset, limit)
         else:
             # Use range loading to load only the needed rows
-            if limit == 0 or offset >= meta.row_count:
-                return {
-                    "result_id": result_id,
-                    "offset": offset,
-                    "limit": limit,
-                    "returned": 0,
-                    "total_rows": meta.row_count,
-                    "has_more": False,
-                    "next_offset": None,
-                    "rows": [],
-                }
-            start = offset
-            end = min(offset + limit, meta.row_count)
-            df = await self._load_range_df(result_id, start, end, columns=columns)
-            rows = _df_to_rows(df)
-            has_more = end < meta.row_count
-            next_offset = end if has_more else None
-            return {
-                "result_id": result_id,
-                "offset": offset,
-                "limit": limit,
-                "returned": len(rows),
-                "total_rows": meta.row_count,
-                "has_more": has_more,
-                "next_offset": next_offset,
-                "rows": rows,
-            }
+            total_rows = meta.row_count
+            if limit == 0 or offset >= total_rows:
+                df_slice = pl.DataFrame()
+            else:
+                start = offset
+                end = min(offset + limit, total_rows)
+                df_slice = await self._load_range_df(result_id, start, end, columns=columns)
+
+        # Apply rounding if requested
+        if round_to is not None:
+            for col in df_slice.columns:
+                if df_slice[col].dtype in (pl.Float32, pl.Float64):
+                    if round_to == 0:
+                        df_slice = df_slice.with_columns((pl.col(col) + 1e-12).round(round_to).cast(pl.Int64))
+                    else:
+                        df_slice = df_slice.with_columns((pl.col(col) + 1e-12).round(round_to))
+
+        # Build base response
+        has_more = offset + limit < total_rows
+        next_offset = offset + limit if has_more else None
+        base_response = {
+            "result_id": result_id,
+            "offset": offset,
+            "limit": limit,
+            "total_rows": total_rows,
+            "has_more": has_more,
+            "next_offset": next_offset,
+        }
+
+        # Format response data
+        if format == "json" and encoding == "plain":
+            rows = _df_to_rows(df_slice)
+            base_response["format"] = "json"
+            base_response["encoding"] = "plain"
+            base_response["data"] = rows
+            base_response["rows"] = rows
+            base_response["returned"] = len(rows)
+            return base_response
+
+        # Handle CSV or gzip+base64
+        if format == "csv":
+            plain_payload_str = df_slice.write_csv()
+        else:  # json
+            rows = _df_to_rows(df_slice)
+            plain_payload_str = json.dumps(rows, default=str)
+
+        if encoding == "gzip+base64":
+            payload_bytes = plain_payload_str.encode("utf-8")
+            compressed = gzip.compress(payload_bytes)
+            import hashlib
+            sha256 = hashlib.sha256(payload_bytes).hexdigest()
+            uncompressed_bytes = len(payload_bytes)
+            
+            # Fallback to plain if compressed is larger
+            if len(compressed) < len(payload_bytes):
+                gzip_payload_str = base64.b64encode(compressed).decode("utf-8")
+                base_response["format"] = format
+                base_response["encoding"] = "gzip+base64"
+                base_response["data"] = gzip_payload_str
+                base_response["returned"] = df_slice.height
+                base_response["uncompressed_bytes"] = uncompressed_bytes
+                base_response["sha256"] = sha256
+                return base_response
+            else:
+                base_response["format"] = format
+                base_response["encoding"] = "plain"
+                base_response["returned"] = df_slice.height
+                base_response["uncompressed_bytes"] = uncompressed_bytes
+                base_response["sha256"] = sha256
+                if format == "csv":
+                    base_response["data"] = plain_payload_str
+                else:
+                    rows = _df_to_rows(df_slice)
+                    base_response["data"] = rows
+                    base_response["rows"] = rows
+                return base_response
+
+        # Plain response (originally plain)
+        base_response["format"] = format
+        base_response["encoding"] = encoding
+        base_response["returned"] = df_slice.height
+        if format == "csv":
+            base_response["data"] = plain_payload_str
+        else:
+            rows = _df_to_rows(df_slice)
+            base_response["data"] = rows
+            base_response["rows"] = rows
+        return base_response
 
     async def count_rows(
         self,
