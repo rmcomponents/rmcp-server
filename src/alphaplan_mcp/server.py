@@ -54,6 +54,7 @@ mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan)
 # Register tools
 mcp.tool()(customers.list_customers)
 mcp.tool()(parts.list_parts)
+mcp.tool()(parts.list_part_stats)
 
 mcp.tool()(result_sets.get_result_info)
 mcp.tool()(result_sets.explain_columns)

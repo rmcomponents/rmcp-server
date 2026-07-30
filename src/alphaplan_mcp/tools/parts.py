@@ -4,14 +4,15 @@
 """Parts ingestion tool."""
 
 import logging
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from fastmcp import Context
 
-from ..database import fetch_parts_stream
+from ..database import fetch_parts_stream, fetch_part_stats_stream
 from ..errors import ToolError
 from ..models import ResultSetSummary, ResultProvenance
 from ..result_store import ResultSetStore
+import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 
@@ -64,4 +65,57 @@ async def list_parts(
         return summary
     except ToolError as e:
         logger.error("ToolError in list_parts: %s", e.message)
+        return e.to_dict()
+
+
+async def list_part_stats(
+    mpn: Optional[str] = None,
+    year: int = None,
+    sales_purchasing: Optional[str] = None,
+    limit: Optional[int] = None,
+    ctx: Context = None,
+) -> Union[ResultSetSummary, Dict[str, Any], List[Dict[str, Any]]]:
+    """
+    Fetch part statistics, either returning a limited number of rows directly or storing as a result set.
+    
+    Parameters:
+    - `mpn`: Optional. If provided, filters parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard.
+    - `year`: Mandatory. The year to fetch statistics for (e.g., 2025).
+    - `sales_purchasing`: Optional. 'V' for Sales (Verkauf), 'E' for Purchasing (Einkauf). If omitted, returns both.
+    - `limit`: Optional. If provided, returns up to this many rows directly in the response. If omitted, stores the full result set in Redis and returns a summary.
+    """
+    try:
+        if year is None:
+            raise ToolError(code="invalid_parameters", message="The 'year' parameter is mandatory.")
+
+        logger.info(
+            "list_part_stats called with mpn=%s, year=%s, sales_purchasing=%s, limit=%s",
+            mpn, year, sales_purchasing, limit
+        )
+
+        if limit is not None:
+            rows = []
+            async for batch in fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing, limit=limit):
+                rows.extend(batch.to_pylist())
+                if len(rows) >= limit:
+                    return rows[:limit]
+            return rows
+        else:
+            store: ResultSetStore = ctx.fastmcp.result_store
+            provenance = ResultProvenance(
+                op="list_part_stats",
+                parameters={
+                    "mpn": mpn,
+                    "year": year,
+                    "sales_purchasing": sales_purchasing
+                }
+            )
+            summary = await store.store_result_stream(
+                session_id=ctx.session_id,
+                provenance=provenance,
+                batches=fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing),
+            )
+            return summary
+    except ToolError as e:
+        logger.error("ToolError in list_part_stats: %s", e.message)
         return e.to_dict()

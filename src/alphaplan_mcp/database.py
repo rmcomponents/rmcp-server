@@ -65,6 +65,16 @@ _PART_COLUMN_DESCRIPTIONS = {
     "WarenGruppenNummer": "Product group number."
 }
 
+_PART_STATS_COLUMN_DESCRIPTIONS = {
+    "ArtikelNummer": "Unique article/part number.",
+    "EinkaufVerkauf": "Sales or Purchasing indicator ('V' = Verkauf/Sales, 'E' = Einkauf/Purchasing).",
+    "Jahr": "Year of the statistics.",
+    "KW": "Calendar week (Kalenderwoche).",
+    "Netto": "Net amount.",
+    "Rohertrag": "Gross profit (Roh).",
+    "Menge": "Quantity (BEEanzahl)."
+}
+
 
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
@@ -147,6 +157,109 @@ async def fetch_customers_stream(
             break
         yield batch
     await task  # propagate any exception
+
+
+async def fetch_part_stats_stream(
+    mpn: Optional[str] = None,
+    year: int = None,
+    sales_purchasing: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> AsyncGenerator[pa.RecordBatch, None]:
+    """
+    Asynchronously yield part statistics rows as Arrow record batches.
+    """
+    import asyncio
+    from asyncio import Queue
+
+    queue: Queue[Optional[pa.RecordBatch]] = asyncio.Queue()
+
+    def _fetch():
+        conn = None
+        cursor = None
+        try:
+            conn = build_connection()
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT
+                    A.ArtikelNummer,
+                    EinkaufVerkauf,
+                    Jahr,
+                    KW,
+                    Netto,
+                    Roh AS Rohertrag,
+                    BEEanzahl AS Menge
+                FROM [ALPHAPLAN_EchtDaten].[dbo].[StatistikenArtikel]
+                JOIN dbo.Artikel A ON A.ArtikelID = StatistikenArtikel.ArtikelID
+                WHERE A.ArtikelID > 0
+            """
+            params = []
+            
+            if year is not None:
+                query += " AND Jahr = ?"
+                params.append(year)
+            
+            if sales_purchasing == 'E':
+                query += " AND EinkaufVerkauf = 'E'"
+            elif sales_purchasing == 'V':
+                query += " AND EinkaufVerkauf = 'V'"
+            else:
+                query += " AND (EinkaufVerkauf = 'E' OR EinkaufVerkauf = 'V')"
+                
+            if mpn:
+                query += " AND A.ArtikelNummer LIKE ?"
+                params.append(mpn)
+                
+            query += " ORDER BY ArtikelNummer, KW"
+            
+            cursor.execute(query, params)
+
+            columns = [col[0] for col in cursor.description]
+            rows_fetched = 0
+            while True:
+                rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
+                if not rows:
+                    break
+                dicts = [dict(zip(columns, row)) for row in rows]
+                batch = pa.RecordBatch.from_pylist(dicts)
+                # Attach column descriptions to the schema metadata
+                new_fields = []
+                for field in batch.schema:
+                    desc = _PART_STATS_COLUMN_DESCRIPTIONS.get(field.name)
+                    if desc:
+                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
+                        new_fields.append(field.with_metadata(metadata))
+                    else:
+                        new_fields.append(field)
+                new_schema = pa.schema(new_fields)
+                cols = [batch.column(i) for i in range(batch.num_columns)]
+                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
+                queue.put_nowait(batch)
+                
+                if limit is not None:
+                    rows_fetched += len(rows)
+                    if rows_fetched >= limit:
+                        break
+        except Exception as e:
+            logger.exception("Error fetching part stats")
+            queue.put_nowait(None)
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        queue.put_nowait(None)
+
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(None, _fetch)
+
+    while True:
+        batch = await queue.get()
+        if batch is None:
+            break
+        yield batch
+    await task
 
 
 async def fetch_parts_stream(
