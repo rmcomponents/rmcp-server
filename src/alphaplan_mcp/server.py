@@ -5,6 +5,7 @@ import asyncio
 import logging
 from contextlib import asynccontextmanager
 from fastmcp import FastMCP
+from fastmcp.server.middleware.logging import LoggingMiddleware
 from redis.asyncio import Redis
 from .config import settings
 from .result_store import ResultSetStore
@@ -50,6 +51,15 @@ async def lifespan(app):
     logger.info("Redis connection closed")
 
 mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan)
+
+if settings.DEBUG:
+    logging.basicConfig(level=logging.DEBUG)
+    mcp.add_middleware(
+        LoggingMiddleware(
+            include_payloads=True,
+            max_payload_length=10_000,
+        )
+    )
 
 # Register tools
 mcp.tool()(customers.list_customers)

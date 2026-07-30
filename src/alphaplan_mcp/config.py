@@ -6,6 +6,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    DEBUG: bool = False
+
     MCP_HOST: str = "0.0.0.0"
     MCP_PORT: int = 9000
 
