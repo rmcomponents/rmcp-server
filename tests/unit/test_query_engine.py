@@ -228,6 +228,27 @@ class TestListRowsFormats:
         assert '"quote "" here"' in res["data"]
         assert '"newline\n here"' in res["data"]
 
+    @pytest.mark.asyncio
+    async def test_csv_escaping_quotes_and_newlines(self, fake_redis):
+        store = ResultSetStore(fake_redis)
+        session_id = "test_session"
+        table = pa.table({
+            "text": ['quote " here', 'newline\n here'],
+        })
+        provenance = ResultProvenance(op="test_source")
+        summary = await store.store_result(session_id, provenance, table)
+        engine = QueryEngine(store, session_id)
+        res = await engine.list_rows(summary.result_id, format="csv")
+        assert '"quote "" here"' in res["data"]
+        assert '"newline\n here"' in res["data"]
+
+    @pytest.mark.asyncio
+    async def test_round_to_2_integral_doubles(self, setup_engine_float_integral):
+        engine, result_id = setup_engine_float_integral
+        res = await engine.list_rows(result_id, round_to=2)
+        assert isinstance(res["data"][0]["value"], int)
+        assert res["data"][0]["value"] == 10
+
 
 @pytest_asyncio.fixture
 async def setup_engine(fake_redis):
@@ -254,6 +275,22 @@ async def setup_engine_float(fake_redis):
     table = pa.table({
         "name": ["Alice", "bob", "Alice", "Charlie", "Bob", None],
         "value": [10.5, 20.5, 30.5, 40.5, 50.5, 60.5],
+        "active": [True, False, True, True, False, True],
+        "age": [25, 30, 35, 40, 45, None],
+    })
+    provenance = ResultProvenance(op="test_source")
+    summary = await store.store_result(session_id, provenance, table)
+    engine = QueryEngine(store, session_id)
+    return engine, summary.result_id
+
+
+@pytest_asyncio.fixture
+async def setup_engine_float_integral(fake_redis):
+    store = ResultSetStore(fake_redis)
+    session_id = "test_session"
+    table = pa.table({
+        "name": ["Alice", "bob", "Alice", "Charlie", "Bob", None],
+        "value": [10.0, 20.0, 30.0, 40.0, 50.0, 60.0],
         "active": [True, False, True, True, False, True],
         "age": [25, 30, 35, 40, 45, None],
     })
@@ -367,6 +404,19 @@ class TestQueryEngine:
         res = await engine.list_rows(result_id, limit=2, store_result=True)
         assert isinstance(res, ResultSetSummary)
         assert res.row_count == 6  # Full set, not 2
+
+    @pytest.mark.asyncio
+    async def test_list_rows_columns_and_sort(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(
+            result_id, 
+            columns=["name", "value"], 
+            sort=[SortSpec(column="value", direction="desc")],
+            stable_sort=True
+        )
+        assert res["returned"] == 6
+        assert res["data"][0]["value"] == 60
+        assert "age" not in res["data"][0]
 
     @pytest.mark.asyncio
     async def test_query_rows_store_result(self, setup_engine):

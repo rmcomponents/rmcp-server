@@ -627,27 +627,24 @@ class QueryEngine:
             raise tool_error("INVALID_ENCODING", f"Unsupported encoding '{encoding}'. Must be 'plain' or 'gzip+base64'.")
 
         # Determine stable sort tie-breakers
-        tie_breaker_cols = []
-        use_row_index_fallback = False
         if stable_sort and sort:
-            sort_cols = {s.column for s in sort} if sort else set()
-            # Add all other columns as tie-breakers to ensure deterministic order
-            for col in [c.name for c in meta.columns]:
-                if col not in sort_cols:
-                    tie_breaker_cols.append(col)
-            
-            # Append tie-breakers to sort list
-            for col in tie_breaker_cols:
-                sort.append(SortSpec(column=col, direction="asc", nulls="last"))
+            # Add all other columns as tie-breakers in alphabetical order
+            existing_sort_cols = {s.column for s in sort}
+            additional_sorts = []
+            for c in sorted(meta.columns, key=lambda x: x.name):
+                if c.name not in existing_sort_cols:
+                    additional_sorts.append(SortSpec(column=c.name, direction="asc"))
+            effective_sort = sort + additional_sorts
+        else:
+            effective_sort = sort
 
         if store_result:
-            df = await self._load_full_df(result_id, columns=columns)
-            if use_row_index_fallback:
-                df = df.with_row_index("__row_idx__")
-            if sort:
-                df = _apply_sort(df, sort)
-            if use_row_index_fallback:
-                df = df.drop("__row_idx__")
+            # Load full table if sorting, to ensure sort columns are present before projection
+            df = await self._load_full_df(result_id) if effective_sort else await self._load_full_df(result_id, columns=columns)
+            if effective_sort:
+                df = _apply_sort(df, effective_sort)
+            if columns:
+                df = df.select(columns)
             # Do not slice by limit/offset when storing the result
             parent_meta = await self.store.get_metadata(result_id)
             cols_info = []
@@ -677,14 +674,12 @@ class QueryEngine:
                 source_row_count=parent_meta.row_count,
             )
 
-        if sort or use_row_index_fallback:
+        if effective_sort:
             # Load full table, sort, then slice
-            df = await self._load_full_df(result_id, columns=columns)
-            if use_row_index_fallback:
-                df = df.with_row_index("__row_idx__")
-            df = _apply_sort(df, sort)
-            if use_row_index_fallback:
-                df = df.drop("__row_idx__")
+            df = await self._load_full_df(result_id) # Load all columns
+            df = _apply_sort(df, effective_sort)
+            if columns:
+                df = df.select(columns)
             total_rows = df.height
             df_slice = df.slice(offset, limit)
         else:
@@ -704,7 +699,11 @@ class QueryEngine:
                     if round_to == 0:
                         df_slice = df_slice.with_columns((pl.col(col) + 1e-12).round(round_to).cast(pl.Int64))
                     else:
-                        df_slice = df_slice.with_columns((pl.col(col) + 1e-12).round(round_to))
+                        rounded_expr = (pl.col(col) + 1e-12).round(round_to)
+                        df_slice = df_slice.with_columns(rounded_expr.alias(col))
+                        # If all non-null values are integral, cast the whole column to Int64
+                        if (df_slice[col].drop_nulls() % 1 == 0).all():
+                            df_slice = df_slice.with_columns(df_slice[col].cast(pl.Int64))
 
         # Build base response
         has_more = offset + limit < total_rows
@@ -724,7 +723,7 @@ class QueryEngine:
             base_response["format"] = "json"
             base_response["encoding"] = "plain"
             base_response["data"] = rows
-            base_response["rows"] = rows
+            base_response["rows"] = rows  # Add this line
             base_response["returned"] = len(rows)
             return base_response
 
@@ -763,7 +762,6 @@ class QueryEngine:
                 else:
                     rows = _df_to_rows(df_slice)
                     base_response["data"] = rows
-                    base_response["rows"] = rows
                 return base_response
 
         # Plain response (originally plain)
@@ -775,7 +773,6 @@ class QueryEngine:
         else:
             rows = _df_to_rows(df_slice)
             base_response["data"] = rows
-            base_response["rows"] = rows
         return base_response
 
     async def count_rows(
