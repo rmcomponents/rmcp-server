@@ -9,7 +9,7 @@ from fastmcp.server.middleware.logging import LoggingMiddleware
 from redis.asyncio import Redis
 from .config import settings
 from .result_store import ResultSetStore
-from .tools import customers, parts, result_sets
+from .tools import customers, mouser, parts, result_sets
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +63,7 @@ if settings.DEBUG:
 
 # Register tools
 mcp.tool()(customers.list_customers)
+mcp.tool()(mouser.search_mouser_parts)
 mcp.tool()(parts.list_parts)
 mcp.tool()(parts.list_part_stats)
 

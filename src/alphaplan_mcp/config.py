@@ -35,4 +35,8 @@ class Settings(BaseSettings):
     SQLSERVER_TRUST_CERTIFICATE: str = "yes"
     SQLSERVER_QUERY_TIMEOUT_SECONDS: int = 120
 
+    MOUSER_API_KEY: str = ""
+    MOUSER_API_BASE_URL: str = "https://api.mouser.com/api/v1"
+    MOUSER_TIMEOUT_SECONDS: float = 15.0
+
 settings = Settings()
