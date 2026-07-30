@@ -1,11 +1,17 @@
 from __future__ import annotations
 
+import json
+import logging
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
+from redis.asyncio import Redis
+
 from ...config import settings
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -17,6 +23,48 @@ class CachedEntry:
 class MouserCache(Protocol):
     async def get(self, key: str) -> CachedEntry | None: ...
     async def set(self, key: str, payload: Any, ttl_seconds: float) -> None: ...
+
+
+class RedisMouserCache:
+    """Redis-backed MouserCache.
+
+    Each entry is stored as a JSON envelope:
+    {"stored_at": <ISO-8601 UTC>, "payload": <extracted parts list>}
+    Expiry is delegated to Redis via SET ... EX, so TTL survives restarts
+    (given persistence is enabled in redis.conf).
+    """
+
+    def __init__(self, redis: Redis) -> None:
+        self._redis = redis
+
+    async def get(self, key: str) -> CachedEntry | None:
+        try:
+            raw = await self._redis.get(key)
+        except Exception as exc:
+            # Cache is best-effort: degrade to a miss, never fail the tool.
+            logger.warning("Mouser cache GET failed (key=%s): %s", key, exc)
+            return None
+        if raw is None:
+            return None
+        try:
+            envelope = json.loads(raw)  # redis returns bytes; json.loads handles them
+            return CachedEntry(
+                payload=envelope["payload"],
+                stored_at=datetime.fromisoformat(envelope["stored_at"]),
+            )
+        except (TypeError, ValueError, KeyError) as exc:
+            logger.warning("Corrupt mouser cache entry (key=%s): %s", key, exc)
+            return None
+
+    async def set(self, key: str, payload: Any, ttl_seconds: float) -> None:
+        envelope = json.dumps({
+            "stored_at": datetime.now(timezone.utc).isoformat(),
+            "payload": payload,
+        })
+        try:
+            await self._redis.set(key, envelope, ex=max(1, int(ttl_seconds)))
+        except Exception as exc:
+            logger.warning("Mouser cache SET failed (key=%s): %s", key, exc)
 
 
 class NullMouserCache:

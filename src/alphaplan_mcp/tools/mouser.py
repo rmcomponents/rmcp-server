@@ -10,6 +10,7 @@ from fastmcp import Context
 from ..apis.mouser.api import search_by_part_number
 from ..apis.mouser.cache import build_cache_key, cache_metadata, default_cache
 from ..apis.mouser.parts_extraction import extract_purchasing_parts
+from ..config import settings
 from ..errors import ToolError, tool_error
 
 logger = logging.getLogger(__name__)
@@ -18,7 +19,7 @@ logger = logging.getLogger(__name__)
 async def search_mouser_parts(
     mpn: str,
     caching: bool = True,
-    cache_ttl_override_hours: float = 24.0,
+    cache_ttl_override_hours: float = settings.MOUSER_CACHE_TTL_HOURS,
     ctx: Context = None,
 ) -> Dict[str, Any]:
     """
@@ -27,7 +28,7 @@ async def search_mouser_parts(
     Parameters:
     - `mpn`: Exact manufacturer part number to search (single part).
     - `caching`: Whether to use caching (default True). When False, cache is neither read nor written.
-    - `cache_ttl_override_hours`: Cache TTL in hours (default 24, must be positive).
+    - `cache_ttl_override_hours`: Cache TTL in hours (default 168, must be positive).
     - `ctx`: FastMCP context (injected automatically).
     
     Returns a dict with:
@@ -42,7 +43,7 @@ async def search_mouser_parts(
         - `source`: "mouser_api" or "cache".
         - `fetched_at`: ISO-8601 UTC timestamp of the request.
     
-    Note: Caching is currently a no-op (NullMouserCache) until Redis backend is implemented.
+    Results are cached in Redis (persistent across restarts, key expiry handled by Redis TTL).
     """
     try:
         mpn = mpn.strip()

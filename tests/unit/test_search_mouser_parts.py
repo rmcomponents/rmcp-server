@@ -51,7 +51,7 @@ async def test_search_mouser_parts_happy_path():
         assert metadata["caching_enabled"] is True
         assert metadata["cached"] is False
         assert metadata["cache_age_hours"] is None
-        assert metadata["cache_ttl_hours"] == 24.0
+        assert metadata["cache_ttl_hours"] == 168.0
         assert metadata["source"] == "mouser_api"
         datetime.fromisoformat(metadata["fetched_at"])
 

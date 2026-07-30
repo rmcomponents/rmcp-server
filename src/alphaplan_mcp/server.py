@@ -7,9 +7,10 @@ from contextlib import asynccontextmanager
 from fastmcp import FastMCP
 from fastmcp.server.middleware.logging import LoggingMiddleware
 from redis.asyncio import Redis
+from .apis.mouser.cache import RedisMouserCache
 from .config import settings
 from .result_store import ResultSetStore
-from .tools import customers, mouser, parts, result_sets
+from .tools import customers, mouser as mouser_tool, parts, result_sets
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,7 @@ async def cleanup_loop(app, interval_seconds=300):
 @asynccontextmanager
 async def lifespan(app):
     app.redis = Redis.from_url(settings.REDIS_URL, decode_responses=False)
+    mouser_tool.default_cache = RedisMouserCache(app.redis)
     app.result_store = ResultSetStore(
         redis=app.redis,
         prefix=settings.REDIS_KEY_PREFIX,
@@ -63,7 +65,7 @@ if settings.DEBUG:
 
 # Register tools
 mcp.tool()(customers.list_customers)
-mcp.tool()(mouser.search_mouser_parts)
+mcp.tool()(mouser_tool.search_mouser_parts)
 mcp.tool()(parts.list_parts)
 mcp.tool()(parts.list_part_stats)
 

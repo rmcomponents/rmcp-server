@@ -1,10 +1,16 @@
 """Tests for alphaplan_mcp.apis.mouser.cache."""
 from __future__ import annotations
 
+import json
+from datetime import datetime, timezone
+from unittest.mock import AsyncMock
+
 import pytest
 
 from alphaplan_mcp.apis.mouser.cache import (
+    CachedEntry,
     NullMouserCache,
+    RedisMouserCache,
     build_cache_key,
     cache_metadata,
     entry_age_hours,
@@ -41,9 +47,7 @@ def test_entry_age_hours():
     """entry_age_hours calculates age correctly."""
     from datetime import timedelta
     
-    from alphaplan_mcp.apis.mouser.cache import CachedEntry
-    
-    now = pytest.importorskip("datetime").datetime.now(pytest.importorskip("datetime").timezone.utc)
+    now = datetime.now(timezone.utc)
     entry = CachedEntry(payload={"data": "value"}, stored_at=now - timedelta(hours=1, minutes=30))
     
     age = entry_age_hours(entry, now=now)
@@ -52,7 +56,6 @@ def test_entry_age_hours():
 
 def test_cache_metadata_miss():
     """cache_metadata with no entry."""
-    from alphaplan_mcp.apis.mouser.cache import cache_metadata
     
     metadata = cache_metadata(
         caching_enabled=True,
@@ -70,9 +73,7 @@ def test_cache_metadata_hit():
     """cache_metadata with entry."""
     from datetime import timedelta
     
-    from alphaplan_mcp.apis.mouser.cache import CachedEntry, cache_metadata
-    
-    now = pytest.importorskip("datetime").datetime.now(pytest.importorskip("datetime").timezone.utc)
+    now = datetime.now(timezone.utc)
     entry = CachedEntry(payload={"data": "value"}, stored_at=now - timedelta(hours=2))
     
     metadata = cache_metadata(
@@ -85,3 +86,36 @@ def test_cache_metadata_hit():
     assert metadata["cached"] is True
     assert metadata["cache_age_hours"] == 2.0
     assert metadata["cache_ttl_hours"] == 48.0
+@pytest.mark.asyncio
+async def test_redis_cache_roundtrip(fake_redis):
+    cache = RedisMouserCache(fake_redis)
+    await cache.set("k", [{"a": 1}], 3600)
+    entry = await cache.get("k")
+    assert entry is not None
+    assert entry.payload == [{"a": 1}]
+    assert entry.stored_at.tzinfo is not None  # tz-aware UTC
+
+@pytest.mark.asyncio
+async def test_redis_cache_miss_returns_none(fake_redis):
+    assert await RedisMouserCache(fake_redis).get("missing") is None
+
+@pytest.mark.asyncio
+async def test_redis_cache_applies_ttl(fake_redis):
+    cache = RedisMouserCache(fake_redis)
+    await cache.set("k", [], 3600)
+    ttl = await fake_redis.ttl("k")
+    assert 0 < ttl <= 3600
+
+@pytest.mark.asyncio
+async def test_redis_cache_corrupt_entry_is_miss(fake_redis):
+    await fake_redis.set("k", b"not-json")
+    assert await RedisMouserCache(fake_redis).get("k") is None
+
+@pytest.mark.asyncio
+async def test_redis_cache_backend_failure_degrades_gracefully():
+    redis = AsyncMock()
+    redis.get.side_effect = ConnectionError("down")
+    redis.set.side_effect = ConnectionError("down")
+    cache = RedisMouserCache(redis)
+    assert await cache.get("k") is None
+    await cache.set("k", [], 60)  # must not raise

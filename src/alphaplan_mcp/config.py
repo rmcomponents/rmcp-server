@@ -38,5 +38,6 @@ class Settings(BaseSettings):
     MOUSER_API_KEY: str = ""
     MOUSER_API_BASE_URL: str = "https://api.mouser.com/api/v1"
     MOUSER_TIMEOUT_SECONDS: float = 15.0
+    MOUSER_CACHE_TTL_HOURS: float = 168.0  # 7 days
 
 settings = Settings()

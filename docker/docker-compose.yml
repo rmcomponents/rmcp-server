@@ -18,7 +18,7 @@ services:
     image: redis:7.2-alpine
     command: ["redis-server", "/usr/local/etc/redis/redis.conf"]
     volumes:
-      - redis-data:/data
+      - redis_data:/data
       - ./redis.conf:/usr/local/etc/redis/redis.conf
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -29,7 +29,7 @@ services:
       - alphaplan-net
 
 volumes:
-  redis-data:
+  redis_data:
 
 networks:
   alphaplan-net:
