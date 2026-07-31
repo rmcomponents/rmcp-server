@@ -167,10 +167,10 @@ async def fetch_customers_stream(
 
 
 async def fetch_webshop_prices_stream(
-    mpn: str,
+    mpns: List[str],
 ) -> AsyncGenerator[pa.RecordBatch, None]:
     """
-    Asynchronously yield webshop price rows as Arrow record batches.
+    Asynchronously yield webshop price rows for multiple MPNs as Arrow record batches.
     """
     import asyncio
     from asyncio import Queue
@@ -183,13 +183,14 @@ async def fetch_webshop_prices_stream(
         try:
             conn = build_connection()
             cursor = conn.cursor()
-            query = """
+            placeholders = ",".join("?" for _ in mpns)
+            query = f"""
                 SELECT mpn, quantity_breakpoint, unit_price, updated_at
                 FROM [ApiPreise].[dbo].[WebshopPreise]
-                WHERE mpn = ?
-                ORDER BY quantity_breakpoint ASC
+                WHERE mpn IN ({placeholders})
+                ORDER BY mpn, quantity_breakpoint ASC
             """
-            cursor.execute(query, (mpn,))
+            cursor.execute(query, mpns)
 
             columns = [col[0] for col in cursor.description]
             while True:
