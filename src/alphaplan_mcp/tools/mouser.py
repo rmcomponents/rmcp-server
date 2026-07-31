@@ -12,6 +12,7 @@ from ..apis.mouser.cache import build_cache_key, cache_metadata, default_cache
 from ..apis.mouser.parts_extraction import extract_purchasing_parts
 from ..config import settings
 from ..errors import ToolError, tool_error
+from ..utils import normalize_mpn
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +47,7 @@ async def search_mouser_parts(
     Results are cached in Redis (persistent across restarts, key expiry handled by Redis TTL).
     """
     try:
-        mpn = mpn.strip()
+        mpn = normalize_mpn(mpn)
         if not mpn:
             raise tool_error("INVALID_MPN", "MPN must not be empty")
         

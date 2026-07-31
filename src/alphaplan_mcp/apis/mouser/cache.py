@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
@@ -10,6 +9,7 @@ from typing import Any, Protocol
 from redis.asyncio import Redis
 
 from ...config import settings
+from ...utils import normalize_mpn
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +78,7 @@ class NullMouserCache:
 
 def build_cache_key(mpn: str) -> str:
     """Build a normalized cache key for a part number."""
-    normalized = re.sub(r"\s+", "", mpn).upper()
+    normalized = normalize_mpn(mpn)
     return f"{settings.REDIS_KEY_PREFIX}:mouser:part:{normalized}"
 
 
