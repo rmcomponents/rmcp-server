@@ -75,6 +75,13 @@ _PART_STATS_COLUMN_DESCRIPTIONS = {
     "Menge": "Quantity (BEEanzahl)."
 }
 
+_WEBSHOP_PRICE_COLUMN_DESCRIPTIONS = {
+    "mpn": "Manufacturer part number.",
+    "quantity_breakpoint": "Minimum quantity for this price tier.",
+    "unit_price": "Unit price at the given quantity breakpoint.",
+    "updated_at": "Timestamp when this price was last updated.",
+}
+
 
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
@@ -157,6 +164,73 @@ async def fetch_customers_stream(
             break
         yield batch
     await task  # propagate any exception
+
+
+async def fetch_webshop_prices_stream(
+    mpn: str,
+) -> AsyncGenerator[pa.RecordBatch, None]:
+    """
+    Asynchronously yield webshop price rows as Arrow record batches.
+    """
+    import asyncio
+    from asyncio import Queue
+
+    queue: Queue[Optional[pa.RecordBatch]] = asyncio.Queue()
+
+    def _fetch():
+        conn = None
+        cursor = None
+        try:
+            conn = build_connection()
+            cursor = conn.cursor()
+            query = """
+                SELECT mpn, quantity_breakpoint, unit_price, updated_at
+                FROM [ApiPreise].[dbo].[WebshopPreise]
+                WHERE mpn = ?
+                ORDER BY quantity_breakpoint ASC
+            """
+            cursor.execute(query, (mpn,))
+
+            columns = [col[0] for col in cursor.description]
+            while True:
+                rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
+                if not rows:
+                    break
+                dicts = [dict(zip(columns, row)) for row in rows]
+                batch = pa.RecordBatch.from_pylist(dicts)
+                # Attach column descriptions
+                new_fields = []
+                for field in batch.schema:
+                    desc = _WEBSHOP_PRICE_COLUMN_DESCRIPTIONS.get(field.name)
+                    if desc:
+                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
+                        new_fields.append(field.with_metadata(metadata))
+                    else:
+                        new_fields.append(field)
+                new_schema = pa.schema(new_fields)
+                cols = [batch.column(i) for i in range(batch.num_columns)]
+                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
+                queue.put_nowait(batch)
+        except Exception:
+            logger.exception("Error fetching webshop prices")
+            queue.put_nowait(None)
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        queue.put_nowait(None)
+
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(None, _fetch)
+
+    while True:
+        batch = await queue.get()
+        if batch is None:
+            break
+        yield batch
+    await task
 
 
 async def fetch_part_stats_stream(

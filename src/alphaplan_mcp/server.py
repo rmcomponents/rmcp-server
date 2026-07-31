@@ -10,7 +10,7 @@ from redis.asyncio import Redis
 from .apis.mouser.cache import RedisMouserCache
 from .config import settings
 from .result_store import ResultSetStore
-from .tools import customers, mouser as mouser_tool, parts, result_sets
+from .tools import customers, mouser as mouser_tool, parts, result_sets, webshop
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +68,7 @@ mcp.tool()(customers.list_customers)
 mcp.tool()(mouser_tool.search_mouser_parts)
 mcp.tool()(parts.list_parts)
 mcp.tool()(parts.list_part_stats)
+mcp.tool()(webshop.get_webshop_prices)
 
 mcp.tool()(result_sets.get_result_info)
 mcp.tool()(result_sets.explain_columns)
