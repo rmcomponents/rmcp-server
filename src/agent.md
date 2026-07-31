@@ -270,3 +270,12 @@ When `store_result=true` is passed to `list_rows`, `query_rows`, `group_by`, `di
 
 - `sample_n` (optional int): If provided, instructs the SQL server to return a random sample of approximately `n` rows using `TABLESAMPLE`. This is highly performant but applies *before* any filters (`positive_filter_term`, etc.), so the final row count may be less than `n` if filters are also applied. If omitted, all matching rows are returned.
 
+## 11. Tool: `search_mouser_parts`
+
+- `mpns` (list of str, required): 1–5 manufacturer part numbers. Each MPN is looked up independently, in parallel, and cached individually in Redis. Duplicates (after normalization) are queried only once.
+- `caching` (bool, default `true`): when `false`, the cache is neither read nor written.
+- `cache_ttl_override_hours` (float, default 168, must be positive).
+- Returns `{"results": {<normalized MPN>: {"part_count", "parts", "metadata"}}}`. Per-MPN lookup failures (e.g. `MOUSER_TIMEOUT`) are returned as an error object in that MPN's entry only — they do not fail the whole call. Call-level validation errors (`INVALID_MPNS`, `TOO_MANY_MPNS`, `INVALID_CACHE_TTL`) are returned as a top-level error object.
+- `metadata.source` is `"mouser_api"` or `"cache"` per MPN; `metadata.cached` / `cache_age_hours` reflect the per-MPN cache state.
+- **Mouser API quotas: max 30 requests per minute and 1000 requests per day.** Only cache misses consume quota. Keep caching enabled and batch up to 5 MPNs per call to conserve the daily quota.
+
