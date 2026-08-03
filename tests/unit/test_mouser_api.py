@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
@@ -87,6 +87,50 @@ async def test_search_by_part_number_rate_limit():
     with pytest.raises(ToolError) as exc_info:
         await search_by_part_number("ABC123", client=client)
     assert exc_info.value.code == "MOUSER_RATE_LIMIT"
+
+
+@pytest.mark.asyncio
+async def test_search_by_part_number_rate_limit_retry():
+    """429 with retry_on_rate_limit=True retries once after 60s."""
+    from alphaplan_mcp.config import settings
+
+    calls = 0
+
+    async def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status_code=429)
+        return httpx.Response(status_code=200, json=FIXTURE)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    # Patch sleep to avoid real 60s wait
+    with patch("alphaplan_mcp.apis.mouser.api.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        result = await search_by_part_number("ABC123", client=client, retry_on_rate_limit=True)
+
+    assert calls == 2
+    mock_sleep.assert_awaited_once_with(settings.MOUSER_RATE_LIMIT_RETRY_SECONDS)
+    assert result == FIXTURE
+
+
+@pytest.mark.asyncio
+async def test_search_by_part_number_rate_limit_no_retry():
+    """429 with retry_on_rate_limit=False raises immediately."""
+    calls = 0
+
+    async def handler(request: httpx.Request):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(status_code=429)
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(ToolError) as exc_info:
+        await search_by_part_number("ABC123", client=client, retry_on_rate_limit=False)
+
+    assert exc_info.value.code == "MOUSER_RATE_LIMIT"
+    assert calls == 1
 
 
 @pytest.mark.asyncio

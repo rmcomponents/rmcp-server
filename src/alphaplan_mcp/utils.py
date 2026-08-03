@@ -2,9 +2,15 @@ import re
 
 def normalize_mpn(mpn: str) -> str:
     """
-    Normalize a manufacturer part number (MPN).
-    Converts to uppercase, removes all whitespace, and strips any characters
-    that are not alphanumeric, '-', '_', or '.'.
+    Normalize a manufacturer part number (MPN) for deduplication and cache keys.
+
+    The normalization rule is:
+    - Remove all whitespace (spaces, tabs, newlines).
+    - Convert to uppercase.
+    - Remove any character that is not alphanumeric, '-', '_', or '.'.
+
+    This is intentionally lossy; use it only for internal lookups, not for
+    display or response keys.
     """
     if not mpn:
         return ""

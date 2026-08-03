@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import csv
+import io
 import logging
 from datetime import datetime, timezone
 from typing import Any, Dict
@@ -17,33 +19,47 @@ from ..utils import normalize_mpn
 
 logger = logging.getLogger(__name__)
 
-MAX_MPNS_PER_CALL = 5
+MAX_MPNS_PER_CALL = 25
 
 
 async def search_mouser_parts(
     mpns: list[str],
     caching: bool = True,
     cache_ttl_override_hours: float = settings.MOUSER_CACHE_TTL_HOURS,
+    output_format: str = "json",
+    retry_on_rate_limit: bool = True,
     ctx: Context = None,
-) -> Dict[str, Any]:
+) -> Any:
     """
-    Search Mouser for up to 5 manufacturer part numbers in a single call.
+    Search Mouser for up to 25 manufacturer part numbers in a single call.
 
     Parameters:
-    - `mpns`: List of 1-5 exact manufacturer part numbers. Each MPN is looked up
+    - `mpns`: List of 1-25 exact manufacturer part numbers. Each MPN is looked up
       independently, in parallel, and cached individually in Redis.
     - `caching`: Whether to use caching (default True). When False, cache is neither read nor written.
     - `cache_ttl_override_hours`: Cache TTL in hours (default 168, must be positive).
+    - `output_format`: Output format, either "csv" or "json". Defaults to "json".
+    - `retry_on_rate_limit`: If True, a 429 triggers one retry after 60 seconds. Defaults to True.
     - `ctx`: FastMCP context (injected automatically).
 
-    Returns a dict with a single key `results`: a map of normalized MPN -> result, where each
-    result has `part_count`, `parts` (from `extract_purchasing_parts`), and `metadata`
-    (`caching_enabled`, `cached`, `cache_age_hours`, `cache_ttl_hours`, `source` ("mouser_api"
-    or "cache"), `fetched_at`). A failed lookup for one MPN does not fail the call; that MPN's
-    entry contains an error object instead. Duplicate MPNs (after normalization) are queried once.
+    Returns a dict with a single key `results`: a map of request string -> result, where each
+    result has `requested_mpn` (the exact input string), `part_count`, `parts` (from
+    `extract_purchasing_parts`), and `metadata` (`caching_enabled`, `cached`,
+    `cache_age_hours`, `cache_ttl_hours`, `source` ("mouser_api" or "cache"), `fetched_at`).
+    A failed lookup for one MPN does not fail the call; that MPN's entry contains an error
+    object instead. Duplicate MPNs (after normalization) are queried once, but each distinct
+    request string appears as a separate key in `results` pointing to the same part data.
+
+    Response keys are the original request strings with leading/trailing whitespace removed;
+    internal spaces, case, and punctuation are preserved. Normalization (uppercase, remove all
+    whitespace, strip characters that are not alphanumeric, '-', '_', or '.') is used only for
+    deduplication and cache keys.
 
     Mouser API quotas: max 30 requests/minute and 1000 requests/day. Cache hits do not consume
-    quota. Keep caching enabled and batch up to 5 MPNs per call to stay within the daily quota.
+    quota. Keep caching enabled and batch up to 25 MPNs per call to stay within the daily quota.
+
+    If output_format is "csv", returns a CSV string with columns:
+    MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
     """
     try:
         if not mpns:
@@ -56,31 +72,87 @@ async def search_mouser_parts(
             )
         if cache_ttl_override_hours <= 0:
             raise tool_error("INVALID_CACHE_TTL", "cache_ttl_override_hours must be positive")
+        if output_format not in ("csv", "json"):
+            raise tool_error("INVALID_FORMAT", "output_format must be 'csv' or 'json'")
 
         ttl_seconds = cache_ttl_override_hours * 3600
         fetched_at = datetime.now(timezone.utc).isoformat()
 
+        def _mouser_results_to_csv(results: dict) -> str:
+            output = io.StringIO()
+            writer = csv.writer(output, lineterminator="\n")
+            writer.writerow([
+                "MPN", "breakpoint_min", "breakpoint_max",
+                "unit_price_min", "unit_price_max", "updated_at", "error",
+            ])
+
+            for mpn, result in results.items():
+                if "error" in result:
+                    writer.writerow([mpn, "", "", "", "", "", result.get("message", "")])
+                    continue
+
+                parts = result.get("parts") or []
+                quantity_breaks = []
+                unit_prices = []
+
+                for part in parts:
+                    for price_break in part.get("price_breaks") or []:
+                        q = price_break.get("quantity")
+                        p = price_break.get("unit_price")
+                        if q is not None:
+                            quantity_breaks.append(q)
+                        if p is not None:
+                            unit_prices.append(p)
+
+                metadata = result.get("metadata") or {}
+                if metadata.get("source") == "cache":
+                    updated_at = metadata.get("cached_at") or ""
+                else:
+                    updated_at = metadata.get("fetched_at") or ""
+
+                writer.writerow([
+                    mpn,
+                    min(quantity_breaks) if quantity_breaks else "",
+                    max(quantity_breaks) if quantity_breaks else "",
+                    min(unit_prices) if unit_prices else "",
+                    max(unit_prices) if unit_prices else "",
+                    updated_at,
+                    "",
+                ])
+
+            return output.getvalue()
+
         # Normalize and dedupe (order-preserving); empty entries become per-MPN errors.
+        # Response keys are the original request strings with leading/trailing whitespace
+        # removed, while normalization is used only for deduplication and cache keys.
         results: Dict[str, Any] = {}
-        to_fetch: list[str] = []
+        normalized_to_requests: Dict[str, list[str]] = {}
         for raw_mpn in mpns:
             normalized = normalize_mpn(raw_mpn)
             if not normalized:
-                results[raw_mpn] = tool_error("INVALID_MPN", "MPN must not be empty").to_dict()
-            elif normalized not in to_fetch:
-                to_fetch.append(normalized)
+                results[raw_mpn] = {
+                    **tool_error("INVALID_MPN", "MPN must not be empty").to_dict(),
+                    "requested_mpn": raw_mpn,
+                }
+            else:
+                normalized_to_requests.setdefault(normalized, []).append(raw_mpn)
 
         async def fetch_one(mpn: str) -> Dict[str, Any]:
             key = build_cache_key(mpn)
             entry = None
+            cached_at = None
             try:
                 if caching:
                     entry = await default_cache.get(key)
                 if entry is not None:
                     parts = entry.payload
                     source = "cache"
+                    cached_at = entry.stored_at.isoformat()
                 else:
-                    raw = await search_by_part_number(mpn)
+                    raw = await search_by_part_number(
+                        mpn,
+                        retry_on_rate_limit=retry_on_rate_limit,
+                    )
                     parts = extract_purchasing_parts(raw)
                     if caching:
                         await default_cache.set(key, parts, ttl_seconds)
@@ -96,16 +168,26 @@ async def search_mouser_parts(
                         ),
                         "source": source,
                         "fetched_at": fetched_at,
+                        "cached_at": cached_at,
                     },
                 }
             except ToolError as e:
                 logger.error("ToolError searching MPN %s: %s", mpn, e.message)
                 return e.to_dict()
 
-        fetched = await asyncio.gather(*(fetch_one(m) for m in to_fetch))
-        for mpn, result in zip(to_fetch, fetched):
-            results[mpn] = result
+        fetched = await asyncio.gather(*(fetch_one(m) for m in normalized_to_requests))
+        for normalized, result in zip(normalized_to_requests, fetched):
+            for raw_mpn in normalized_to_requests[normalized]:
+                request_key = raw_mpn.strip()
+                # If multiple request strings strip to the same key, the first one wins.
+                if request_key not in results:
+                    results[request_key] = {
+                        **result,
+                        "requested_mpn": raw_mpn,
+                    }
 
+        if output_format == "csv":
+            return _mouser_results_to_csv(results)
         return {"results": results}
     
     except ToolError as e:
