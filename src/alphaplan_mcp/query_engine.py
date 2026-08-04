@@ -5,6 +5,7 @@
 
 import base64
 import gzip
+import hashlib
 import json
 import logging
 import math
@@ -301,6 +302,11 @@ def _df_to_rows(df: pl.DataFrame) -> List[Dict[str, Any]]:
         normalized = {k: _normalize_value(v) for k, v in row.items()}
         rows.append(normalized)
     return rows
+
+
+def _sha256_b64(text: str) -> str:
+    """Return Base64(SHA-256(UTF-8 bytes of text))."""
+    return base64.b64encode(hashlib.sha256(text.encode("utf-8")).digest()).decode("ascii")
 
 
 # ---------------------------------------------------------------------------
@@ -733,6 +739,8 @@ class QueryEngine:
             rows = _df_to_rows(df_slice)
             plain_payload_str = json.dumps(rows, default=str)
 
+        csv_sha256_base64 = _sha256_b64(plain_payload_str) if format == "csv" else None
+
         if encoding == "gzip+base64":
             payload_bytes = plain_payload_str.encode("utf-8")
             compressed = gzip.compress(payload_bytes)
@@ -748,7 +756,10 @@ class QueryEngine:
                 base_response["data"] = gzip_payload_str
                 base_response["returned"] = df_slice.height
                 base_response["uncompressed_bytes"] = uncompressed_bytes
-                base_response["sha256"] = sha256
+                if format == "csv":
+                    base_response["sha256_base64"] = csv_sha256_base64
+                else:
+                    base_response["sha256"] = sha256
                 return base_response
             else:
                 base_response["format"] = format
@@ -758,9 +769,11 @@ class QueryEngine:
                 base_response["sha256"] = sha256
                 if format == "csv":
                     base_response["data"] = plain_payload_str
+                    base_response["sha256_base64"] = csv_sha256_base64
                 else:
                     rows = _df_to_rows(df_slice)
                     base_response["data"] = rows
+                    base_response["sha256"] = sha256
                 return base_response
 
         # Plain response (originally plain)
@@ -769,6 +782,7 @@ class QueryEngine:
         base_response["returned"] = df_slice.height
         if format == "csv":
             base_response["data"] = plain_payload_str
+            base_response["sha256_base64"] = csv_sha256_base64
         else:
             rows = _df_to_rows(df_slice)
             base_response["data"] = rows

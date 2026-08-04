@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -84,9 +86,14 @@ async def test_search_mouser_parts_csv_output():
         mock_api.assert_not_called()
 
         result = await search_mouser_parts(["ABC123"], output_format="csv")
+        csv_data = result["csv"]
 
-        # Verify CSV structure
-        lines = result.strip().split("\n")
+        assert result["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(csv_data.encode("utf-8")).digest()
+        ).decode("ascii")
+        assert csv_data.endswith("\n")
+
+        lines = csv_data.strip().split("\n")
         assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error"
         assert len(lines) == 2  # header + one row
         row = lines[1].split(",")
@@ -135,8 +142,14 @@ async def test_search_mouser_parts_csv_output_fresh():
         ]
 
         result = await search_mouser_parts(["ABC123"], output_format="csv")
+        csv_data = result["csv"]
 
-        lines = result.strip().split("\n")
+        assert result["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(csv_data.encode("utf-8")).digest()
+        ).decode("ascii")
+        assert csv_data.endswith("\n")
+
+        lines = csv_data.strip().split("\n")
         row = lines[1].split(",")
         assert row[0] == "ABC123"
         assert row[1] == "1"
@@ -455,8 +468,14 @@ async def test_search_mouser_parts_csv_output_with_spaces():
         mock_cache.set = AsyncMock()
 
         result = await search_mouser_parts(["HK1005 10NJ-T"], output_format="csv")
+        csv_data = result["csv"]
 
-        lines = result.strip().split("\n")
+        assert result["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(csv_data.encode("utf-8")).digest()
+        ).decode("ascii")
+        assert csv_data.endswith("\n")
+
+        lines = csv_data.strip().split("\n")
         assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error"
         row = lines[1].split(",")
         assert row[0] == "HK1005 10NJ-T"

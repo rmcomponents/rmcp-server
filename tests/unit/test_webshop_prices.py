@@ -1,3 +1,5 @@
+import base64
+import hashlib
 import pytest
 import pyarrow as pa
 from unittest.mock import patch
@@ -27,7 +29,14 @@ async def test_get_webshop_prices_success():
 
     with patch("alphaplan_mcp.tools.webshop.fetch_webshop_prices_stream", side_effect=fake_stream):
         result = await get_webshop_prices(["ABC123"])
-        lines = result.strip().split("\n")
+        csv_data = result["csv"]
+
+        assert result["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(csv_data.encode("utf-8")).digest()
+        ).decode("ascii")
+        assert csv_data.endswith("\n")
+
+        lines = csv_data.strip().split("\n")
         assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error"
         assert len(lines) == 2
         row = lines[1].split(",")
@@ -49,7 +58,10 @@ async def test_get_webshop_prices_empty():
 
     with patch("alphaplan_mcp.tools.webshop.fetch_webshop_prices_stream", side_effect=fake_stream):
         result = await get_webshop_prices(["NOPE"])
-        assert result == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error\n"
+        assert result["csv"] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error\n"
+        assert result["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(result["csv"].encode("utf-8")).digest()
+        ).decode("ascii")
 
 
 @pytest.mark.asyncio
@@ -79,7 +91,14 @@ async def test_get_webshop_prices_multiple_mpns():
 
     with patch("alphaplan_mcp.tools.webshop.fetch_webshop_prices_stream", side_effect=fake_stream):
         result = await get_webshop_prices(["ABC123", "DEF456"])
-        lines = result.strip().split("\n")
+        csv_data = result["csv"]
+
+        assert result["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(csv_data.encode("utf-8")).digest()
+        ).decode("ascii")
+        assert csv_data.endswith("\n")
+
+        lines = csv_data.strip().split("\n")
         assert len(lines) == 3  # header + 2 rows
         assert captured["mpns"] == ["ABC123", "DEF456"]
         # Check both rows exist

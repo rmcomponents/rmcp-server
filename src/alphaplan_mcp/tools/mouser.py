@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import csv
+import hashlib
 import io
 import logging
 from datetime import datetime, timezone
@@ -58,8 +60,12 @@ async def search_mouser_parts(
     Mouser API quotas: max 30 requests/minute and 1000 requests/day. Cache hits do not consume
     quota. Keep caching enabled and batch up to 25 MPNs per call to stay within the daily quota.
 
-    If output_format is "csv", returns a CSV string with columns:
-    MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
+    If output_format is "csv", returns a dict with keys:
+    - `csv`: the CSV string with columns:
+      MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
+    - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
+      excluding the checksum line. Preserve LF line endings and the final newline
+      exactly. Verify before using the data.
     """
     try:
         if not mpns:
@@ -187,7 +193,13 @@ async def search_mouser_parts(
                     }
 
         if output_format == "csv":
-            return _mouser_results_to_csv(results)
+            csv_data = _mouser_results_to_csv(results)
+            return {
+                "csv": csv_data,
+                "sha256_base64": base64.b64encode(
+                    hashlib.sha256(csv_data.encode("utf-8")).digest()
+                ).decode("ascii"),
+            }
         return {"results": results}
     
     except ToolError as e:

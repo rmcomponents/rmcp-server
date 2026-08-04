@@ -86,6 +86,10 @@ async def list_rows(
 
     The payload is always in `data`, whose type depends on `format`.
 
+    The final `sha256-base64` value is Base64(SHA-256(exact UTF-8 bytes of the
+    preceding CSV)), excluding the checksum line. Preserve LF line endings and
+    the final newline exactly. Verify before using the data.
+
     Efficiency: `format="csv"` with `round_to` is the cheapest option and much smaller than the
     default JSON. gzip adds little on top and only pays for large row counts. For a large export,
     aggregate first (`group_by`) and read the derived result_id.

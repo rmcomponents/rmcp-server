@@ -1,5 +1,7 @@
 """Unit tests for the QueryEngine (filtering, sorting, aggregation)."""
 
+import base64
+import hashlib
 import pyarrow as pa
 import polars as pl
 import pytest
@@ -165,6 +167,10 @@ class TestListRowsFormats:
         assert res["has_more"] is True
         assert res["next_offset"] == 2
         assert isinstance(res["data"], str)
+        assert res["sha256_base64"] == base64.b64encode(
+            hashlib.sha256(res["data"].encode("utf-8")).digest()
+        ).decode("ascii")
+        assert res["data"].endswith("\n")
 
     @pytest.mark.asyncio
     async def test_paging_fields_json_gzip(self, setup_engine):

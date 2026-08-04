@@ -1,6 +1,8 @@
 """Webshop price checking tool."""
 
+import base64
 import csv
+import hashlib
 import io
 import logging
 from datetime import datetime, timezone
@@ -27,14 +29,12 @@ async def get_webshop_prices(
       (e.g., ["CRCW040210K0FKED", "RC0603FR-0710KL"]).
     - `output_format`: Output format, either "csv" or "json". Defaults to "csv".
 
-    Returns a CSV string with the following columns:
-    - `MPN`: Manufacturer part number.
-    - `breakpoint_min`: Minimum quantity for any price tier.
-    - `breakpoint_max`: Maximum quantity for any price tier.
-    - `unit_price_min`: Minimum unit price across all tiers.
-    - `unit_price_max`: Maximum unit price across all tiers.
-    - `updated_at`: Timestamp when this price was last updated (current time for fresh data).
-    - `error`: Error message if any occurred.
+    Returns a dict with:
+    - `csv`: a CSV string with columns:
+      MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
+    - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
+      excluding the checksum line. Preserve LF line endings and the final newline
+      exactly. Verify before using the data.
 
     One row per MPN is returned in the same order as input.
     If no prices are found, the CSV contains only the header line.
@@ -95,7 +95,13 @@ async def get_webshop_prices(
 
         if output_format == "json":
             return {"results": rows}
-        return _webshop_rows_to_csv(rows)
+        csv_data = _webshop_rows_to_csv(rows)
+        return {
+            "csv": csv_data,
+            "sha256_base64": base64.b64encode(
+                hashlib.sha256(csv_data.encode("utf-8")).digest()
+            ).decode("ascii"),
+        }
     except ToolError:
         raise
     except Exception as e:
