@@ -1,3 +1,5 @@
+name: rmcp-server
+
 services:
   mcp:
     build:
