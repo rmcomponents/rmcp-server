@@ -420,7 +420,9 @@ def _build_agg_expr(agg: AggregationSpec) -> pl.Expr:
     elif op == "variance":
         expr = col.var(ddof=agg.ddof)
     elif op == "mode":
-        expr = col.mode().first()
+        # polars mode() returns the set of most-frequent values in unspecified order;
+        # .min() makes ties deterministic (lowest value wins) across calls/rows.
+        expr = col.mode().min()
     elif op == "iqr":
         expr = col.quantile(0.75, interpolation="linear") - col.quantile(0.25, interpolation="linear")
     elif op == "mad":
@@ -884,11 +886,13 @@ class QueryEngine:
             "count": count,
             "count_null": null_count,
         }
-        stats["mean"] = _normalize_value(nn.mean())
-        stats["stddev"] = _normalize_value(nn.std())
         stats["min"] = _normalize_value(nn.min())
         stats["max"] = _normalize_value(nn.max())
         if is_numeric:
+            # mean/stddev are only valid on numeric columns; temporal (date/datetime)
+            # columns support min/max but not these aggregates.
+            stats["mean"] = _normalize_value(nn.mean())
+            stats["stddev"] = _normalize_value(nn.std())
             stats["skewness"] = _normalize_value(nn.skew())
             stats["count_negative"] = int((nn < 0).sum())
             stats["percentiles"] = {
