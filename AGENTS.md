@@ -59,18 +59,19 @@ alphaplan-mcp            (console script, from pyproject [project.scripts])
 
 ## 3. Repository Layout
 
-Actual structure (this is **current**; the layout printed in `src/README.md` is stale).
+Actual structure (this is **current**; `src/README.md` is a pointer to the root `README.md`).
 
 ```text
 .
 ├── AGENTS.md                     # this file
+├── README.md                     # canonical user-facing docs (root pyproject readme)
 ├── pyproject.toml                # ROOT packaging file, used by the Docker build
 ├── src/
 │   ├── pyproject.toml            # DEV project file (uv) — see §3 note below
 │   ├── uv.lock                   # uv lockfile for the dev environment
 │   ├── .venv/                    # local Python 3.12 virtualenv (uv-managed)
-│   ├── README.md                 # STALE — layout/tool list no longer match the code
-│   ├── agent.md                  # Design spec: provenance & column semantics (store_result chaining contract)
+│   ├── README.md                 # pointer to the root README.md
+│   ├── result_set_spec.md        # Design spec: provenance & column semantics (store_result chaining contract)
 │   ├── main.py                   # LEGACY standalone MCP server (reference only)
 │   ├── pytest-tests-unit.out     # captured pytest output artifact
 │   └── alphaplan_mcp/
@@ -119,8 +120,8 @@ Actual structure (this is **current**; the layout printed in `src/README.md` is 
 This is the single most confusing thing in the repo:
 
 - **Root `pyproject.toml`** — the *packaging* metadata. The Docker build (`docker/Dockerfile`)
-  copies it into the image, plus `src/README.md` → `README.md` (because the root `README.md`
-  does **not exist** yet the project references `readme = "README.md"`). Deps in root do
+  copies it into the image, plus the root `README.md` (the project references
+  `readme = "README.md"`). Deps in root do
   **not** include pytest/fakeredis (they are in `[project.optional-dependencies] test`).
 - **`src/pyproject.toml`** — the *dev/uv* project. It lists `pytest`, `pytest-asyncio`,
   `fakeredis` as top-level deps and is what `src/uv.lock` + `src/.venv` were built from.
@@ -179,7 +180,7 @@ Most generic tools accept `store_result: bool = False`. When `true`, the compute
 persisted as a **new** result set (fresh `rs_` id) and a `ResultSetSummary` is returned instead
 of rows. Every derived set records `ResultProvenance` (`op`, `parent`, `parameters`) plus
 column `origin`/`source_column`. Derived sets are first-class tables and can be chained
-recursively. **Read `src/agent.md`** — it is the authoritative spec for column naming,
+recursively. **Read `src/result_set_spec.md`** — it is the authoritative spec for column naming,
 alias validation, type/description inheritance and folding `<source>` fields into provenance.
 
 ### 4.4 Mouser flow
@@ -251,7 +252,7 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `normalize_preview` | Preview how strings are normalized (join/config pipeline) | `values` (≤100); returns `[{raw, normalized, steps: [...]}]` per input — makes key-collision causes directly observable |
 
 The `aggregations` vocabulary (both `aggregate` and `group_by`) covers (see `models.AggregationSpec`
-and `agent.md` §9.3): `count`, `count_non_null`, `count_distinct` (alias `nunique`), `sum`, `avg`
+and `result_set_spec.md` §9.3): `count`, `count_non_null`, `count_distinct` (alias `nunique`), `sum`, `avg`
 (`mean`), `min`, `max`, `median`, `percentile` (`q`, `method` default `linear`), `mode`,
 `trimmed_mean` (`trim`), `stddev`/`variance` (`ddof`), `iqr`, `mad`, `skewness`, `kurtosis`,
 `coefficient_of_variation`, `count_null`, `count_zero`/`count_negative`/`count_positive`,
@@ -357,7 +358,7 @@ uv run python -m alphaplan_mcp
    refused when `uncompressed_size_bytes > RESULTSET_MAX_BYTES`.
 4. **Column descriptions** — Database fetchers attach human-readable descriptions as PyArrow
    field metadata (`b"description"`); the store reads them into `ColumnInfo.description`.
-   `src/agent.md` defines the rules for inheriting/deriving descriptions and types on
+   `src/result_set_spec.md` defines the rules for inheriting/deriving descriptions and types on
    `store_result`. Preserve `type`/`description` fidelity through projections (avoid
    `large_string` leakage).
 5. **Streaming** — The DB fetchers all follow one pattern: blocking pyodbc work in
@@ -371,7 +372,7 @@ uv run python -m alphaplan_mcp
 8. **`store_result`** — Supports chaining; assigns real column names (never `value`/`col0`),
    validates aliases (`^[A-Za-z_][A-Za-z0-9_]*$`, no collision), records `ResultProvenance`
    (note: `join` emits plural `parents`; the rest emit singular `parent`), and returns a
-   `ResultSetSummary`, not rows. See `src/agent.md`.
+   `ResultSetSummary`, not rows. See `src/result_set_spec.md`.
 9. **Config** — Never hardcode environment-specific values in modules; add a field to
    `Settings` (mirroring existing naming), update §7 of this file, and update whichever
    `pyproject.toml` needs the dependency.
@@ -384,11 +385,9 @@ uv run python -m alphaplan_mcp
 
 - **Dual `pyproject.toml`** — root is packaging/Docker; `src/` is the uv dev environment. Keep
   deps in sync where they overlap (§3).
-- **No root `README.md` exists**, yet root `pyproject.toml` declares `readme = "README.md"`.
-  The Dockerfile works around this by `COPY src/README.md ./README.md` before `pip install .`.
-- **`src/README.md` is stale**: its layout tree omits `tools/parts.py`, `tools/webshop.py`,
-  `tools/mouser.py`, `apis/mouser/`, `utils.py`; its test commands (`pytest tests/unit` from `src/`)
-  don't work as written — use `../tests/unit` (§8).
+- **`src/README.md` is a pointer** to the root `README.md` and holds no layout/doc content of its
+  own; the root `README.md` is the canonical user-facing documentation. The Dockerfile previously
+  worked around the missing root README by copying `src/README.md` — this is no longer needed.
 - **`src/main.py` is legacy** — duplicated `list_customers` logic with env-var parsing; do not
   extend. Prefer the packaged entry points.
 - **Inconsistent error style** — `webshop.py` / `list_part_stats` raise `ToolError`; most other

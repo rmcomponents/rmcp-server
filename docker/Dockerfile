@@ -15,7 +15,7 @@ WORKDIR /app
 RUN mkdir -p alphaplan_mcp && echo '__version__ = "0.0.0"' > alphaplan_mcp/__init__.py
 
 COPY pyproject.toml ./
-COPY src/README.md ./README.md
+COPY README.md ./README.md
 RUN pip install --no-cache-dir .
 
 # 2) Overwrite the skeleton with the real application source
