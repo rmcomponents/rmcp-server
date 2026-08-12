@@ -27,6 +27,7 @@ from .models import (
     FilterClause,
     FilterGroup,
     JoinColumnPair,
+    JoinDryRunReport,
     JoinNormalizationReport,
     JoinReport,
     JoinResultSummary,
@@ -36,7 +37,7 @@ from .models import (
     SortSpec,
 )
 from .result_store import ResultSetStore
-from .utils import NORMALIZE_STEPS, normalize_mpn
+from .utils import NORMALIZE_STEPS, normalize_mpn, normalize_mpn_with_steps
 
 logger = logging.getLogger(__name__)
 
@@ -165,6 +166,30 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
         return _string_like(col_expr, value, case_sensitive, negate=False)
     elif op == "not_like":
         return _string_like(col_expr, value, case_sensitive, negate=True)
+    elif op in ("regex", "not_regex"):
+        if not _is_string_dtype(dtype):
+            raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a string column.")
+        if not isinstance(value, str):
+            raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a string pattern.")
+        flags = 0 if case_sensitive else re.IGNORECASE
+        try:
+            re.compile(value, flags)
+        except re.error as exc:
+            raise tool_error("INVALID_ARGUMENT", f"Invalid regular expression: {exc}", {"pattern": value})
+        full = value if case_sensitive else f"(?i){value}"
+        match = col_expr.str.contains(full, literal=False)
+        return match if op == "regex" else ~match
+    elif op in ("matches_charset", "not_matches_charset"):
+        if not _is_string_dtype(dtype):
+            raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a string column.")
+        if not isinstance(value, str) or not value:
+            raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a non-empty set of allowed characters.")
+        # `value` is the set of allowed characters (each regex-escaped, so ranges are literal).
+        # Build ^[\Q...\E]*$ equivalent; case-insensitivity via the (?i) inline flag.
+        cls = _charset_class(value)
+        full = f"^(?i:[{cls}])*$" if not case_sensitive else f"^[{cls}]*$"
+        match = col_expr.str.contains(full, literal=False)
+        return match if op == "matches_charset" else ~match
     elif op == "contains":
         # Use str.contains
         if case_sensitive:
@@ -227,11 +252,6 @@ def _needs_like(value: str) -> bool:
 
 
 def _string_like(col_expr, pattern: str, case_sensitive: bool, negate: bool = False) -> pl.Expr:
-    """Convert a SQL LIKE pattern (with escapes) to a Polars regex expression."""
-    # Build regex
-    # Escape everything except unescaped % and _
-    # We'll use a regex pattern.
-    escaped = re.escape(pattern)
     # re.escape escapes % and _ because they are not regex metacharacters, so they are just literal % and _
     # So after escaping, % and _ are still % and _ (since they are not special). So we can replace them.
     # But re.escape will escape backslashes, so we need to handle the escape character.
@@ -266,6 +286,15 @@ def _string_like(col_expr, pattern: str, case_sensitive: bool, negate: bool = Fa
     if negate:
         return ~col_expr.str.contains(full_regex, literal=False)
     return col_expr.str.contains(full_regex, literal=False)
+
+
+def _charset_class(allowed: str) -> str:
+    """Turn a set of allowed characters into a regex character-class body.
+
+    Each character is regex-escaped so that ranged/meta characters (``-``, ``]``, ``\\``,
+    ``^``) are treated literally rather than forming a class range or escape.
+    """
+    return "".join(re.escape(c) for c in allowed)
 
 
 def _apply_sort(df: pl.DataFrame, sort_specs: List[SortSpec]) -> pl.DataFrame:
@@ -339,9 +368,9 @@ def _build_agg_exprs(aggregations: List[AggregationSpec]) -> List[pl.Expr]:
             if not col:
                 raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
             agg_exprs.append(pl.col(col).count().alias(alias))
-        elif op == "count_distinct":
+        elif op in ("count_distinct", "nunique"):
             if not col:
-                raise tool_error("INVALID_AGGREGATION", "count_distinct requires a column.")
+                raise tool_error("INVALID_AGGREGATION", f"{op} requires a column.")
             agg_exprs.append(pl.col(col).n_unique().alias(alias))
         elif op == "sum":
             if not col:
@@ -1413,8 +1442,12 @@ class QueryEngine:
         validate: Optional[str] = "many_to_one",
         indicator: Union[str, bool] = "_join_match",
         result_label: Optional[str] = None,
-    ) -> JoinResultSummary:
+        dry_run: bool = False,
+    ) -> Union[JoinResultSummary, JoinDryRunReport]:
         """Join two stored result sets on normalized keys and store the result.
+
+        `dry_run=true` returns the structural report (`JoinDryRunReport`) without materializing a
+        result set, while still enforcing `validate` and the output-size guard.
 
         See `tools/result_sets.join` for the full user-facing contract.
         """
@@ -1593,6 +1626,32 @@ class QueryEngine:
         right_keys_altered = _count_altered(right_raw_order)
 
         # collisions: distinct raw keys collapsing to one normalized key
+        def _entry_steps(raw_tuples):
+            """Union of normalization steps (in NORMALIZE_STEPS order) that altered any raw key."""
+            applied = []
+            seen = set()
+            for rt in raw_tuples:
+                if rt in seen:
+                    continue
+                seen.add(rt)
+                for v in rt:
+                    _, ss = normalize_mpn_with_steps(v)
+                    applied.extend(ss)
+            return [s for s in NORMALIZE_STEPS if s in applied]
+
+        def _collision_entry(nt, raw_tuples, side, count=None):
+            rendered_raw = [_render_key(r[0] if len(r) == 1 else r) for r in raw_tuples]
+            distinct_raw = list(dict.fromkeys(rendered_raw))
+            entry = {
+                "normalized": _render_key(nt[0] if len(nt) == 1 else nt),
+                "count": count,
+                "raw": distinct_raw,
+                "side": side,
+                "caused_by_normalization": len(distinct_raw) > 1,
+                "steps_applied": _entry_steps(raw_tuples),
+            }
+            return entry
+
         def _collisions(raw_order, side):
             out = []
             groups = {}
@@ -1603,11 +1662,7 @@ class QueryEngine:
                 groups.setdefault(nt, []).append(rt)
             for nt, raws in groups.items():
                 if len(raws) > 1:
-                    out.append({
-                        "normalized": _render_key(nt[0] if len(nt) == 1 else nt),
-                        "raw": [_render_key(r[0] if len(r) == 1 else r) for r in raws],
-                        "side": side,
-                    })
+                    out.append(_collision_entry(nt, raws, side))
                 if len(out) >= 20:
                     break
             return out
@@ -1616,24 +1671,33 @@ class QueryEngine:
         right_collisions = _collisions(right_raw_order, "right") if any_string_key else []
 
         # --- cardinality validation (on normalized keys) ----------------------------
-        def _duplicate_payload(counts, side):
+        def _group_raws_by_norm(raw_order):
+            groups = {}
+            for rt in raw_order:
+                nt = _norm_tuple(rt)
+                if nt is None:
+                    continue
+                groups.setdefault(nt, []).append(rt)
+            return groups
+
+        def _duplicate_payload(raw_order, counts, side):
+            groups = _group_raws_by_norm(raw_order)
             dupes = [(k, c) for k, c in counts.items() if c > 1]
-            sample = [{"key": _render_key(k[0] if len(k) == 1 else k), "count": c} for k, c in dupes[:20]]
-            return sample
+            return [_collision_entry(k, groups.get(k, []), side, count=c) for k, c in dupes[:20]]
 
         if validate == "many_to_one":
-            d = _duplicate_payload(right_counts, "right")
+            d = _duplicate_payload(right_raw_order, right_counts, "right")
             if d:
                 raise tool_error("CARDINALITY_VIOLATION", "Right-side join keys are not unique (required: many_to_one).", {"keys": d, "side": "right"})
         elif validate == "one_to_one":
-            d = _duplicate_payload(right_counts, "right")
+            d = _duplicate_payload(right_raw_order, right_counts, "right")
             if d:
                 raise tool_error("CARDINALITY_VIOLATION", "Right-side join keys are not unique (required: one_to_one).", {"keys": d, "side": "right"})
-            d = _duplicate_payload(left_counts, "left")
+            d = _duplicate_payload(left_raw_order, left_counts, "left")
             if d:
                 raise tool_error("CARDINALITY_VIOLATION", "Left-side join keys are not unique (required: one_to_one).", {"keys": d, "side": "left"})
         elif validate == "one_to_many":
-            d = _duplicate_payload(left_counts, "left")
+            d = _duplicate_payload(left_raw_order, left_counts, "left")
             if d:
                 raise tool_error("CARDINALITY_VIOLATION", "Left-side join keys are not unique (required: one_to_many).", {"keys": d, "side": "left"})
 
@@ -1705,6 +1769,40 @@ class QueryEngine:
                 f"Join output would exceed {self.settings.RESULTSET_MAX_ROWS} rows.",
                 {"estimated_row_count": estimated_rows},
             )
+
+        # matched output rows (both side rows that would pair up)
+        matched_output_rows = 0
+        for k, cnt in left_counts.items():
+            rc = right_counts.get(k, 0)
+            if rc and rc > 0:
+                matched_output_rows += rc * cnt
+
+        report = JoinReport(
+            how=how,
+            indicator_column=indicator_name,
+            matched_rows=matched_output_rows,
+            unmatched_left_rows=unmatched_left_rows,
+            unmatched_right_rows=unmatched_right_rows,
+            left_keys_total=len(left_set),
+            left_keys_matched=left_keys_matched,
+            left_keys_unmatched=left_keys_unmatched,
+            right_keys_total=len(right_set),
+            right_keys_matched=right_keys_matched,
+            unmatched_key_sample=unmatched_sample,
+            normalization=JoinNormalizationReport(
+                enabled=enabled_steps,
+                left_keys_altered=left_keys_altered,
+                right_keys_altered=right_keys_altered,
+                matches_gained_by_normalization=matches_gained_by_normalization,
+                collisions=left_collisions + right_collisions,
+            ),
+        )
+
+        # dry run: return the report without materializing anything. `validate` and the
+        # size guard above are still enforced, so a caller can inspect collisions and
+        # cardinality without having to disable the safety net to learn why it fired.
+        if dry_run:
+            return JoinDryRunReport(report=report, estimated_row_count=estimated_rows)
 
         # --- polars join ------------------------------------------------------------
         ljoin = left_df.with_columns(
@@ -1795,27 +1893,6 @@ class QueryEngine:
             rc = right_counts.get(k, 0)
             if rc and rc > 0:
                 matched_output_rows += rc * cnt
-
-        report = JoinReport(
-            how=how,
-            indicator_column=indicator_name,
-            matched_rows=matched_output_rows,
-            unmatched_left_rows=unmatched_left_rows,
-            unmatched_right_rows=unmatched_right_rows,
-            left_keys_total=len(left_set),
-            left_keys_matched=left_keys_matched,
-            left_keys_unmatched=left_keys_unmatched,
-            right_keys_total=len(right_set),
-            right_keys_matched=right_keys_matched,
-            unmatched_key_sample=unmatched_sample,
-            normalization=JoinNormalizationReport(
-                enabled=enabled_steps,
-                left_keys_altered=left_keys_altered,
-                right_keys_altered=right_keys_altered,
-                matches_gained_by_normalization=matches_gained_by_normalization,
-                collisions=left_collisions + right_collisions,
-            ),
-        )
 
         # --- grain ------------------------------------------------------------------
         if validate in ("one_to_many", "many_to_many") or how == "full":

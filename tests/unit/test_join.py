@@ -152,10 +152,109 @@ async def test_duplicate_right_key_raises_cardinality_violation(fake_redis):
         )
     assert ei.value.code == "CARDINALITY_VIOLATION"
     assert ei.value.details["side"] == "right"
-    assert any(k["key"] == "A1" and k["count"] == 2 for k in ei.value.details["keys"])
+    assert any(k["normalized"] == "A1" and k["count"] == 2 for k in ei.value.details["keys"])
+    # genuine duplicate -> same raw value, not caused by normalization
+    dup = next(k for k in ei.value.details["keys"] if k["normalized"] == "A1")
+    assert dup["raw"] == ["A1"]
+    assert dup["caused_by_normalization"] is False
+    assert dup["steps_applied"] == []
     # no new result set was created
     after = await store.list_results("s1")
     assert sorted(r.result_id for r in before) == sorted(r.result_id for r in after)
+
+
+@pytest.mark.asyncio
+async def test_comma_collision_payload_exposes_raw_cause(fake_redis):
+    """CARDINALITY_VIOLATION must surface the raw strings that collapsed, so a comma
+    (stripped by normalization, outside the allow-list) is visible on the first call."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS"], "Netto": [5]}), op="stats")
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"],
+                  "WarenGruppe": ["TVS Diode", "TVS Diode"]}),
+        op="dup",
+    )
+
+    with pytest.raises(ToolError) as ei:
+        await _engine(store, "s1").join(
+            left_result_id=left.result_id,
+            right_result_id=right.result_id,
+            on=["ArtikelNummer"],
+            validate="many_to_one",
+        )
+    assert ei.value.code == "CARDINALITY_VIOLATION"
+    assert ei.value.details["side"] == "right"
+    entry = next(k for k in ei.value.details["keys"] if k["normalized"] == "SMAJ60CA-H-HS")
+    assert entry["count"] == 2
+    assert set(entry["raw"]) == {"SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"}
+    assert entry["caused_by_normalization"] is True
+    assert entry["steps_applied"] == ["strip"]
+
+
+@pytest.mark.asyncio
+async def test_report_collisions_carry_normalization_metadata(fake_redis):
+    """The success-path `joirl.normalization.collisions` entries carry the same forensics."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"]}), op="stats")
+    right = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS"], "WG": ["X"]}), op="parts")
+
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        validate=None,
+    )
+    left_cols = [c for c in summary.join.normalization.collisions if c["side"] == "left"]
+    entry = next(c for c in left_cols if c["normalized"] == "SMAJ60CA-H-HS")
+    assert set(entry["raw"]) == {"SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"}
+    assert entry["caused_by_normalization"] is True
+    assert entry["steps_applied"] == ["strip"]
+
+
+@pytest.mark.asyncio
+async def test_dry_run_returns_report_without_creating_result(fake_redis):
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", _stats_table(), op="stats")
+    right = await _store(store, "s1", _parts_table(), op="parts")
+    before = await store.list_results("s1")
+
+    out = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        validate="many_to_one",
+        dry_run=True,
+    )
+    # report-only: no result_id, nothing materialized
+    assert out.dry_run is True
+    assert out.estimated_row_count == 3
+    assert out.report.matched_rows == 2
+    assert out.report.unmatched_left_rows == 1
+    after = await store.list_results("s1")
+    assert sorted(r.result_id for r in before) == sorted(r.result_id for r in after)
+
+
+@pytest.mark.asyncio
+async def test_dry_run_still_enforces_validate(fake_redis):
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["A1"]}), op="stats")
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["A1", "A1"], "WarenGruppe": ["X", "Y"]}),
+        op="dup",
+    )
+
+    with pytest.raises(ToolError) as ei:
+        await _engine(store, "s1").join(
+            left_result_id=left.result_id,
+            right_result_id=right.result_id,
+            on=["ArtikelNummer"],
+            validate="many_to_one",
+            dry_run=True,
+        )
+    assert ei.value.code == "CARDINALITY_VIOLATION"
 
 
 @pytest.mark.asyncio

@@ -81,6 +81,7 @@ mcp.tool()(result_sets.group_by)
 mcp.tool()(result_sets.histogram)
 mcp.tool()(result_sets.join)
 mcp.tool()(result_sets.delete_result_set)
+mcp.tool()(result_sets.normalize_preview)
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):

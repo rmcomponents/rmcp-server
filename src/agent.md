@@ -226,6 +226,13 @@ Filters are defined using `FilterGroup` and `FilterClause`. The allowed `operato
 - `between`: Array of exactly two values. Matches if `value >= low` and `value <= high`.
 - `like`: String with `%` (any sequence) and `_` (single character) wildcards.
 - `not_like`: Negated `like`.
+- `regex`: String regular expression. Matches rows whose value matches the pattern.
+- `not_regex`: Negated `regex`.
+- `matches_charset`: String set of allowed characters. Matches values composed only of those
+  characters (e.g. `matches_charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."` flags keys that are
+  clean under the normalization allow-list).
+- `not_matches_charset`: Negated `matches_charset`. A cheap sweep for dirty keys — any value
+  containing a character outside the allowed set (e.g. a stray comma in an `ArtikelNummer`).
 - `contains`: String substring match.
 - `starts_with`: String prefix match.
 - `ends_with`: String suffix match.
@@ -233,7 +240,9 @@ Filters are defined using `FilterGroup` and `FilterClause`. The allowed `operato
 - `is_not_null`: No `value` field required. Matches non-null values.
 
 ### 9.2 `case_sensitive` Default
-String comparisons (e.g., `eq`, `like`, `contains`) are case-insensitive by default (`case_sensitive: false`). Set `case_sensitive: true` in the `FilterClause` for case-sensitive matching.
+String comparisons (e.g., `eq`, `like`, `contains`, `regex`, `matches_charset`) are
+case-insensitive by default (`case_sensitive: false`). Set `case_sensitive: true` in the
+`FilterClause` for case-sensitive matching.
 
 ### 9.3 Aggregation Operations
 For `aggregate` and `group_by`, the `operation` field in `AggregationSpec` must be one of:
@@ -241,7 +250,7 @@ For `aggregate` and `group_by`, the `operation` field in `AggregationSpec` must 
 - `avg`: Requires `column`.
 - `count`: Does not accept a `column` (use `column: null`). Counts the number of rows.
 - `count_non_null`: Requires `column`. Counts non-null values.
-- `count_distinct`: Requires `column`. Counts distinct values.
+- `count_distinct`: Requires `column`. Counts distinct values. Alias: `nunique`.
 - `min`: Requires `column`.
 - `max`: Requires `column`.
 

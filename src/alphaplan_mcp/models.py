@@ -74,6 +74,13 @@ class ResultSetSummary(BaseModel):
     columns: List[ColumnInfo]
 
 class FilterClause(BaseModel):
+    """A single filter condition.
+
+    Supported `operator` values: `eq`, `ne`, `like`, `not_like`, `regex`, `not_regex`,
+    `matches_charset`, `not_matches_charset`, `contains`, `starts_with`, `ends_with`, `in`,
+    `not_in`, `between`, `gt`, `gte`, `lt`, `lte`, `is_null`, `is_not_null`.
+    """
+
     column: str
     operator: str
     value: Optional[Any] = None
@@ -89,6 +96,12 @@ class SortSpec(BaseModel):
     nulls: str = "last"
 
 class AggregationSpec(BaseModel):
+    """A single aggregation.
+
+    Supported `operation` values: `count`, `count_non_null`, `count_distinct` (alias `nunique`),
+    `sum`, `avg` (alias `mean`), `min`, `max`.
+    """
+
     column: Optional[str] = None  # not used for "count"
     operation: str
     alias: str
@@ -132,3 +145,16 @@ class JoinResultSummary(ResultSetSummary):
     """ResultSetSummary extended with the join's structural report."""
 
     join: Optional[JoinReport] = None
+
+
+class JoinDryRunReport(BaseModel):
+    """Structural report from a dry-run join (no result set is created).
+
+    Returned by `join` when `dry_run=true`. Contains the same structural `report` as a real join
+    plus an `estimated_row_count` of what the stored output would have been, but no `result_id`:
+    nothing is materialized and `validate` is still enforced.
+    """
+
+    dry_run: bool = True
+    estimated_row_count: int = 0
+    report: JoinReport

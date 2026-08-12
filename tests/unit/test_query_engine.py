@@ -50,6 +50,58 @@ class TestFilterBuilding:
         result = df.filter(expr)
         assert result.height == 2  # bob, Bob
 
+    def test_regex(self):
+        df = self.build_df()
+        schema = {c: df[c].dtype for c in df.columns}
+        expr = _build_filter_expr(FilterGroup(clauses=[FilterClause(column="name", operator="regex", value="^bo")]), schema)
+        result = df.filter(expr)
+        assert result["name"].to_list() == ["bob", "Bob"]
+
+    def test_not_regex(self):
+        df = self.build_df()
+        schema = {c: df[c].dtype for c in df.columns}
+        expr = _build_filter_expr(FilterGroup(clauses=[FilterClause(column="name", operator="not_regex", value="^b")]), schema)
+        result = df.filter(expr)
+        names = result["name"].to_list()
+        assert "bob" not in names and "Bob" not in names
+        assert "Alice" in names and "Charlie" in names
+
+    def test_regex_invalid_pattern(self):
+        df = self.build_df()
+        schema = {c: df[c].dtype for c in df.columns}
+        with pytest.raises(ToolError, match="Invalid regular expression"):
+            _build_filter_expr(FilterGroup(clauses=[FilterClause(column="name", operator="regex", value="[")]), schema)
+
+    def test_matches_charset(self):
+        df = pl.DataFrame({"k": ["SMAJ60CA-H-HS", "SMAJ6,0CA-H-HS", "udz27b-fl-h-hs"]})
+        schema = {c: df[c].dtype for c in df.columns}
+        expr = _build_filter_expr(
+            FilterGroup(clauses=[FilterClause(
+                column="k", operator="matches_charset",
+                value="ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_.")]),
+            schema,
+        )
+        result = df.filter(expr)
+        assert result["k"].to_list() == ["SMAJ60CA-H-HS", "udz27b-fl-h-hs"]  # comma row excluded
+
+    def test_not_matches_charset_sweeps_dirty_keys(self):
+        df = pl.DataFrame({"k": ["SMAJ60CA-H-HS", "SMAJ6,0CA-H-HS", "OK-123"]})
+        schema = {c: df[c].dtype for c in df.columns}
+        expr = _build_filter_expr(
+            FilterGroup(clauses=[FilterClause(
+                column="k", operator="not_matches_charset",
+                value="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_.")]),
+            schema,
+        )
+        result = df.filter(expr)
+        assert result["k"].to_list() == ["SMAJ6,0CA-H-HS"]
+
+    def test_regex_requires_string_column(self):
+        df = self.build_df()
+        schema = {c: df[c].dtype for c in df.columns}
+        with pytest.raises(ToolError, match="requires a string column"):
+            _build_filter_expr(FilterGroup(clauses=[FilterClause(column="value", operator="regex", value="1")]), schema)
+
     def test_is_null(self):
         df = self.build_df()
         schema = {c: df[c].dtype for c in df.columns}
@@ -357,6 +409,17 @@ class TestQueryEngine:
         aggs = [AggregationSpec(operation="sum", column="value", alias="total_value")]
         res = await engine.aggregate(result_id, aggregations=aggs)
         assert res["aggregations"]["total_value"] == 210
+
+    @pytest.mark.asyncio
+    async def test_aggregate_nunique_alias(self, setup_engine):
+        engine, result_id = setup_engine
+        aggs = [
+            AggregationSpec(operation="nunique", column="name", alias="n"),
+            AggregationSpec(operation="count_distinct", column="name", alias="cd"),
+        ]
+        res = await engine.aggregate(result_id, aggregations=aggs)
+        assert res["aggregations"]["n"] == 5
+        assert res["aggregations"]["cd"] == 5
 
     @pytest.mark.asyncio
     async def test_group_by(self, setup_engine):

@@ -12,8 +12,56 @@ from ..errors import ToolError, tool_error
 from ..models import FilterGroup, SortSpec, AggregationSpec, JoinColumnPair, ResultSetSummary
 from ..query_engine import QueryEngine
 from ..result_store import ResultSetStore
+from ..utils import normalize_mpn_with_steps
 
 logger = logging.getLogger(__name__)
+
+
+MAX_PREVIEW_VALUES = 100
+
+
+async def normalize_preview(
+    values: List[str],
+    ctx: Context = None,
+):
+    """Preview how one or more strings are normalized by the single fixed join/config pipeline.
+
+    This makes the normalization behavior directly observable instead of inferable. Given the
+    raw values that collapsed onto one join key (for example from a `CARDINALITY_VIOLATION`
+    payload or a join report's `normalization.collisions`), it shows exactly what each string
+    becomes and which pipeline stages actually altered it:
+
+    - `normalize_preview(["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"])` ->
+        `[{"raw": "SMAJ6,0CA-H-HS", "normalized": "SMAJ60CA-H-HS", "steps": ["strip"]}, ...]`
+
+    Parameters:
+    - `values`: The strings to normalize. Up to 100 (constraint enforced).
+
+    The pipeline (identical to a join with `normalize_keys=true`) is: Unicode NFKC normalization,
+    dash folding (U+2011 etc. -> '-'), whitespace collapse, uppercase, then strip any character
+    that is not alphanumeric, '-', '_' or '.'. `steps` lists the pipeline stages that actually
+    changed a value (can be empty). `None` / non-string values are returned unchanged with empty
+    steps.
+
+    Errors: INVALID_ARGUMENT (too many values).
+    """
+    try:
+        if len(values) > MAX_PREVIEW_VALUES:
+            return tool_error(
+                "INVALID_ARGUMENT",
+                f"Too many values (max {MAX_PREVIEW_VALUES}).",
+                {"max": MAX_PREVIEW_VALUES, "provided": len(values)},
+            ).to_dict()
+        return [
+            {"raw": v, "normalized": n, "steps": s}
+            for v in values
+            for n, s in [normalize_mpn_with_steps(v)]
+        ]
+    except ToolError as e:
+        return e.to_dict()
+    except Exception as e:
+        logger.exception("normalize_preview failed")
+        return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
 
 
 async def get_result_info(result_id: str, ctx: Context):
@@ -141,6 +189,13 @@ async def query_rows(
     """Return rows matching structured filters, with optional sorting and projection.
 
     Parameters:
+    - `filters`: A `FilterGroup` (`combine`: "all"|"any", `clauses`). Supported operators per
+      clause: `eq`, `ne`, `like`, `not_like`, `regex`, `not_regex`, `matches_charset`,
+      `not_matches_charset`, `contains`, `starts_with`, `ends_with`, `in`, `not_in`, `between`,
+      `gt`, `gte`, `lt`, `lte`, `is_null`, `is_not_null`. `regex`/`not_regex` take a regular
+      expression; `matches_charset`/`not_matches_charset` take the set of allowed characters and
+      match values composed only of those (e.g. `matches_charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."`
+      flags any key containing an out-of-set character such as a comma).
     - `store_result`: Optional. If true, stores the result subset as a new result set and returns a `ResultSetSummary` instead of the rows.
 
     Chaining: any tool taking a `result_id` accepts a derived one, including `group_by` output.
@@ -294,6 +349,7 @@ async def join(
     validate: Optional[str] = "many_to_one",
     indicator: Union[str, bool] = "_join_match",
     result_label: Optional[str] = None,
+    dry_run: bool = False,
     ctx: Context = None,
 ) -> Union[Dict[str, Any], ResultSetSummary]:
     """Join two stored result sets on shared keys and store the combined result.
@@ -335,6 +391,11 @@ async def join(
       `_join_match = "left_only"` then lets `aggregate` / `group_by` / `query_rows` quantify exactly
       what did not match.
     - `result_label`: Optional free-text label stored verbatim in metadata.
+    - `dry_run`: If `true`, return the structural report without materializing a result set (no
+      `result_id`). `validate` and the output-size guard are still enforced, so this is the safe
+      way to inspect a `CARDINALITY_VIOLATION`'s collision details (in `report.normalization`)
+      without disabling the safety net. Returns a `JoinDryRunReport` with `dry_run`, an
+      `estimated_row_count` and the same structural `report` as a real join.
 
     Return value: A `JoinResultSummary` — `ResultSetSummary` plus a `join` report containing only
     structural metrics (never business measures): `matched_rows`, `unmatched_left_rows`,
@@ -358,7 +419,7 @@ async def join(
         engine = QueryEngine(store, ctx.session_id)
         return await engine.join(
             left_result_id, right_result_id, on, how, columns_left, columns_right,
-            suffix, normalize_keys, validate, indicator, result_label
+            suffix, normalize_keys, validate, indicator, result_label, dry_run
         )
     except ToolError as e:
         return e.to_dict()

@@ -40,7 +40,7 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 |---|---|---|---|
 | 1 | **Console script** | `alphaplan-mcp` | Declared in `[project.scripts]` of both `pyproject.toml` files → `alphaplan_mcp.__main__:main` → `alphaplan_mcp.server:main()` |
 | 2 | **Module run** | `python -m alphaplan_mcp` | Same path as above; this is the Docker `CMD` |
-| 3 | **App assembly / wiring** | `src/alphaplan_mcp/server.py` | Builds the `FastMCP("AlphaPlanMCP")` instance, lifespan, Redis client, `ResultSetStore`, Mouser cache, cleanup loop, registers all 16 tools, adds the `/health` route and DEBUG middleware |
+| 3 | **App assembly / wiring** | `src/alphaplan_mcp/server.py` | Builds the `FastMCP("AlphaPlanMCP")` instance, lifespan, Redis client, `ResultSetStore`, Mouser cache, cleanup loop, registers all 17 tools, adds the `/health` route and DEBUG middleware |
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
 | 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_customers` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
@@ -210,7 +210,7 @@ never a tool failure.
 | `tools/parts.py` | Parts / part-stats tools | `list_parts`, `list_part_stats` |
 | `tools/webshop.py` | Webshop price tool | `get_webshop_prices` |
 | `tools/mouser.py` | Mouser search tool | `search_mouser_parts` |
-| `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set` |
+| `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set`, `normalize_preview` |
 | `apis/mouser/api.py` | Mouser REST client | `search_by_part_number` |
 | `apis/mouser/cache.py` | Cache backend & selection point | `RedisMouserCache`, `NullMouserCache`, `default_cache`, `build_cache_key`, `CachedEntry`, `cache_metadata` |
 | `apis/mouser/parts_extraction.py` | Shape raw Mouser payload → purchasing parts | `extract_purchasing_parts` |
@@ -244,8 +244,9 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `aggregate` | Single-row aggregation over whole (filtered) set | `aggregations`, `store_result`, `result_label` |
 | `group_by` | Per-group aggregation | `group_columns` (≤3), `aggregations`, `sort`, `store_result`, `result_label` |
 | `histogram` | Binned histogram (numeric/date) or top-N (string) | `column`, `bins` (≤50), `store_result`, `result_label` |
-| `join` | Join two result sets; only cross-`result_id` operation | `left_result_id`, `right_result_id`, `on` (shared name or `{left,right}` pairs), `how` (`left` default), `columns_left`/`columns_right`, `suffix` (`_r`), `normalize_keys` (default on: single fixed `normalize_mpn` pipeline — trim/collapse whitespace, NFKC, dash-fold, uppercase, strip), `validate` (`many_to_one` default), `indicator` (`_join_match`), `result_label`. Returns `JoinResultSummary` (structural report only — no measures; use `aggregate`/`group_by` filtered on the indicator to quantify unmatched rows). Raises `CARDINALITY_VIOLATION`, `OWNER_SESSION_MISMATCH`, `JOIN_KEY_TYPE_MISMATCH`, `COLUMN_NAME_COLLISION`, `RESULT_SET_TOO_LARGE` (pre-materialization estimate) |
+| `join` | Join two result sets; only cross-`result_id` operation | `left_result_id`, `right_result_id`, `on` (shared name or `{left,right}` pairs), `how` (`left` default), `columns_left`/`columns_right`, `suffix` (`_r`), `normalize_keys` (default on: single fixed `normalize_mpn` pipeline — trim/collapse whitespace, NFKC, dash-fold, uppercase, strip), `validate` (`many_to_one` default), `indicator` (`_join_match`), `result_label`, `dry_run` (`false` default; returns a `JoinDryRunReport` with no `result_id`, still enforcing `validate`/size guard). Returns `JoinResultSummary` (structural report only — no measures; use `aggregate`/`group_by` filtered on the indicator to quantify unmatched rows). On failure, `CARDINALITY_VIOLATION` now carries `keys: [{normalized, count, raw, side, caused_by_normalization, steps_applied}]` in its details. Raises `CARDINALITY_VIOLATION`, `OWNER_SESSION_MISMATCH`, `JOIN_KEY_TYPE_MISMATCH`, `COLUMN_NAME_COLLISION`, `RESULT_SET_TOO_LARGE` (pre-materialization estimate) |
 | `delete_result_set` | Explicit deletion | `result_id` |
+| `normalize_preview` | Preview how strings are normalized (join/config pipeline) | `values` (≤100); returns `[{raw, normalized, steps: [...]}]` per input — makes key-collision causes directly observable |
 
 ---
 
