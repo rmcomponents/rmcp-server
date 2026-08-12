@@ -150,6 +150,7 @@ async def list_rows(
     format: str = "json",
     encoding: str = "plain",
     round_to: Optional[int] = None,
+    result_label: Optional[str] = None,
     ctx: Context = None,
 ) -> Union[Dict[str, Any], ResultSetSummary]:
     """Return a subset of rows from a stored result set.
@@ -174,6 +175,8 @@ async def list_rows(
     - `round_to`: Optional. Rounds numeric columns to this many decimal places. Values that are
       integral are emitted without a decimal point.
     - `store_result`: Optional. If true, stores the read subset as a new result set and returns a `ResultSetSummary` instead of the rows.
+    - `result_label`: Optional free-text label stored verbatim in the result set's metadata when
+      `store_result` is true.
 
     The payload is always in `data`, whose type depends on `format`.
 
@@ -193,7 +196,7 @@ async def list_rows(
         engine = QueryEngine(store, ctx.session_id)
         return await engine.list_rows(
             result_id, columns, limit, offset, sort, store_result, 
-            format, encoding, round_to
+            format, encoding, round_to, result_label
         )
     except ToolError as e:
         return e.to_dict()
@@ -227,6 +230,8 @@ async def query_rows(
     limit: int = 50,
     offset: int = 0,
     store_result: bool = False,
+    result_label: Optional[str] = None,
+    round_to: Optional[int] = None,
     ctx: Context = None,
 ) -> Union[Dict[str, Any], ResultSetSummary]:
     """Return rows matching structured filters, with optional sorting and projection.
@@ -240,13 +245,17 @@ async def query_rows(
       match values composed only of those (e.g. `matches_charset: "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-_."`
       flags any key containing an out-of-set character such as a comma).
     - `store_result`: Optional. If true, stores the result subset as a new result set and returns a `ResultSetSummary` instead of the rows.
+    - `result_label`: Optional free-text label stored verbatim in the result set's metadata when
+      `store_result` is true.
+    - `round_to`: Optional. Rounds numeric columns to this many decimal places (same behaviour as
+      `list_rows`) in the returned rows.
 
     Chaining: any tool taking a `result_id` accepts a derived one, including `group_by` output.
     """
     try:
         store: ResultSetStore = ctx.fastmcp.result_store
         engine = QueryEngine(store, ctx.session_id)
-        return await engine.query_rows(result_id, filters, columns, sort, limit, offset, store_result)
+        return await engine.query_rows(result_id, filters, columns, sort, limit, offset, store_result, result_label, round_to)
     except ToolError as e:
         return e.to_dict()
     except Exception as e:

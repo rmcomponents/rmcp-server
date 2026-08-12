@@ -44,7 +44,7 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
 | 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_customers` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
-| 7 | **Tests** | pytest, rootdir = repo root | 150 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
+| 7 | **Tests** | pytest, rootdir = repo root | 313 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
 | 8 | **Health check** | `GET /health` | Custom route in `server.py`; returns `{"status": "healthy", "redis": "ok"}` or 503 when Redis is unreachable |
 
 The canonical boot path is:
@@ -101,7 +101,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 8 test modules, 130 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 9 test modules, 313 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -165,7 +165,10 @@ response rows / derived result set
 1. Ingestion tool streams data into Redis as chunks; metadata holds stats, provenance, TTLs.
 2. Every set has an **idle TTL** (`RESULTSET_IDLE_TTL_SECONDS`, default 1 h) extended on access
    (`ResultSetStore.update_access`, bounded by the absolute max) and an **absolute max lifetime**
-   (`RESULTSET_MAX_TTL_SECONDS`, default 24 h).
+   (`RESULTSET_MAX_TTL_SECONDS`, default 24 h). The reported `expires_at` reflects the **actual**
+   current expiry — i.e. `now + idle_ttl`, re-armed & persisted on every access — not the static
+   absolute cap. `absolute_expires_at` is the immutable upper bound kept for `update_access`; old
+   stored metadata without `expires_at` backfills it to `absolute_expires_at` on load.
 3. Sets are keyed by `result_id`, not by session. There are **no ownership checks anywhere**:
    any `result_id` can be read, joined, or deleted regardless of which session created it. The
    `owner_session_id` metadata field and the `{prefix}:session:{session}:results` index are retained
@@ -240,9 +243,9 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `get_result_info` | Metadata + column stats, safe field set (no owner id) | `result_id` |
 | `explain_columns` | Per-column stats, optional `examples` | `columns`, `include_examples` |
 | `describe_columns` | Per-column distribution bundle (mean, stddev, min, percentiles, max, skewness, count_negative, counts); whole set or per group | `columns`, `percentiles` (default `[0.05,.25,.5,.75,.95]`, linear), `filters`, `group_columns` (≤3) |
-| `list_rows` | Paginate raw rows; sorting/projection applied per call | `columns`, `sort`, `limit`, `offset`, `format` (`json`/`csv`), `encoding` (`plain`/`gzip+base64`), `round_to`, `store_result` |
+| `list_rows` | Paginate raw rows; sorting/projection applied per call | `columns`, `sort`, `limit`, `offset`, `format` (`json`/`csv`), `encoding` (`plain`/`gzip+base64`), `round_to`, `stable_sort`, `store_result`, `result_label` |
 | `count_rows` | Row count w/ optional filters | `filters` |
-| `query_rows` | Filter + sort + project + paginate | `filters`, `columns`, `sort`, `store_result` |
+| `query_rows` | Filter + sort + project + paginate | `filters`, `columns`, `sort`, `store_result`, `result_label`, `round_to` |
 | `distinct_values` | Value frequencies for a column | `column`, `include_counts`, `order`, `include_null`, `store_result`, `result_label` |
 | `aggregate` | Single-row aggregation over whole (filtered) set | `aggregations`, `store_result`, `result_label` |
 | `group_by` | Per-group aggregation | `group_columns` (≤3), `aggregations`, `sort`, `store_result`, `result_label` |
@@ -250,6 +253,12 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `join` | Join two result sets; only cross-`result_id` operation | `left_result_id`, `right_result_id`, `on` (shared name or `{left,right}` pairs), `how` (`left` default), `columns_left`/`columns_right`, `suffix` (`_r`), `normalize_keys` (default on: single fixed `normalize_mpn` pipeline — trim/collapse whitespace, NFKC, dash-fold, uppercase, strip), `validate` (`many_to_one` default; **uniqueness is scoped to participating keys only** — a duplicate absent from the other side cannot fan out and never blocks; it is surfaced in `data_quality`), `right_duplicates` (`error`\|`first`\|`report_only`; default `error`; `first` keeps the lowest-ordinal right row per normalized key and preserves sums, `report_only` proceeds and records a metadata note), `indicator` (`_join_match`), `result_label`, `dry_run` (`false` default; returns a `JoinDryRunReport` with no `result_id`, still enforcing `validate`/size guard). Returns `JoinResultSummary` (structural report only — no measures; use `aggregate`/`group_by` filtered on the indicator to quantify unmatched rows). Report now includes `deduplicated_rows` and a `data_quality` block (`non_participating_collisions`, `sample`). On failure, `CARDINALITY_VIOLATION` carries `keys: [{normalized, count, raw, side, caused_by_normalization, steps_applied}]` in its details. Raises `CARDINALITY_VIOLATION`, `JOIN_KEY_TYPE_MISMATCH`, `COLUMN_NAME_COLLISION`, `RESULT_SET_TOO_LARGE` (pre-materialization estimate) |
 | `delete_result_set` | Explicit deletion | `result_id` |
 | `normalize_preview` | Preview how strings are normalized (join/config pipeline) | `values` (≤100); returns `[{raw, normalized, steps: [...]}]` per input — makes key-collision causes directly observable |
+
+**Pagination contract** (`list_rows`, `query_rows`, `group_by`, `distinct_values`): the response is
+terminal whenever a page returns zero rows — `has_more` is `false` and `next_offset` is `null`.
+In particular `limit=0` and an offset past the end both terminate; a client driving the loop via
+`while has_more: offset = next_offset` can never be stuck. `has_more` requires both
+`returned > 0` **and** `offset + limit < total_rows`.
 
 The `aggregations` vocabulary (both `aggregate` and `group_by`) covers (see `models.AggregationSpec`
 and `result_set_spec.md` §9.3): `count`, `count_non_null`, `count_distinct` (alias `nunique`), `sum`, `avg`
@@ -276,8 +285,8 @@ Env file: `.env` in the CWD; Docker Compose feeds it from `docker/.env`.
 | `REDIS_URL` | `redis://redis:6379/0` | Redis connection URL |
 | `REDIS_KEY_PREFIX` | `alphaplan-mcp` | Prefix for **all** app keys (result sets + mouser cache) |
 | `RESULTSET_CHUNK_ROWS` | `5000` | Rows per stored chunk |
-| `RESULTSET_IDLE_TTL_SECONDS` | `3600` | Idle TTL, extended on access |
-| `RESULTSET_MAX_TTL_SECONDS` | `86400` | Absolute max lifetime |
+| `RESULTSET_IDLE_TTL_SECONDS` | `3600` | Idle TTL, extended on access; drives the reported `expires_at` |
+| `RESULTSET_MAX_TTL_SECONDS` | `86400` | Absolute max lifetime; the immutable cap (`absolute_expires_at`) |
 | `RESULTSET_MAX_ROWS` | `250000` | Max rows per result set |
 | `RESULTSET_MAX_BYTES` | `268435456` | Max uncompressed size per result set |
 | `RESULTSET_MAX_GROUPS` | `10000` | Max groups in `group_by` |
@@ -317,7 +326,7 @@ which shows `../tests/unit/...`) is:
 
 ```bash
 cd src
-uv run pytest ../tests/unit          # all unit tests (130)
+uv run pytest ../tests/unit          # all unit tests (313)
 uv run pytest ../tests/unit/test_query_engine.py   # single module
 ```
 

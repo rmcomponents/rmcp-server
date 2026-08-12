@@ -116,6 +116,7 @@ class ResultSetStore:
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
+            expires_at=absolute_expires_at,
             row_count=total_rows,
             column_count=len(table.schema),
             uncompressed_size_bytes=table.nbytes,
@@ -291,6 +292,7 @@ class ResultSetStore:
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
+            expires_at=absolute_expires_at,
             row_count=total_rows,
             column_count=len(schema),
             uncompressed_size_bytes=total_uncompressed,
@@ -336,22 +338,32 @@ class ResultSetStore:
             return None
         return deserialize_metadata(data)
 
-    async def update_access(self, result_id: str) -> None:
+    async def update_access(self, result_id: str) -> Optional[ResultSetMetadata]:
+        """Extend the idle TTL on access and persist the resulting actual expiry.
+
+        The absolute max lifetime (`absolute_expires_at`) is the immutable cap; the keys'
+        real expiry slides on each access to `now + idle_ttl` (bounded by that cap). The
+        refreshed `expires_at` is persisted so reads (`get_result_info`, `list_results`)
+        report the actual retention, not a static creation-time value.
+        """
         meta = await self.get_metadata(result_id)
         if not meta:
-            return
+            return None
         now = datetime.now(timezone.utc)
         remaining = (meta.absolute_expires_at - now).total_seconds()
         if remaining <= 0:
-            return
+            return meta
         effective_ttl = min(self.idle_ttl, int(remaining))
         if effective_ttl <= 0:
-            return
+            return meta
+        meta.last_accessed_at = now
+        meta.expires_at = now + timedelta(seconds=effective_ttl)
         pipe = self.redis.pipeline()
-        pipe.expire(self._meta_key(result_id), effective_ttl)
+        pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=effective_ttl)
         for idx in range(meta.chunk_count):
             pipe.expire(self._chunk_key(result_id, idx), effective_ttl)
         await pipe.execute()
+        return meta
 
     async def load_table(self, result_id: str) -> Optional[pa.Table]:
         meta = await self.get_metadata(result_id)
@@ -419,7 +431,7 @@ class ResultSetStore:
                     column_count=meta.column_count,
                     stored_size_bytes=meta.stored_size_bytes,
                     created_at=meta.created_at,
-                    expires_at=meta.absolute_expires_at,
+                    expires_at=meta.expires_at or meta.absolute_expires_at,
                     columns=meta.columns,
                 ))
             else:

@@ -378,10 +378,16 @@ def _format_paginated_result(
     offset: int,
     limit: int,
     total_rows: int,
+    round_to: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Apply offset/limit slicing and format the standard pagination response."""
-    rows = _df_to_rows(df.slice(offset, limit))
-    has_more = offset + limit < total_rows
+    """Apply offset/limit slicing (and optional rounding) and format the pagination response.
+
+    `has_more` is false whenever nothing was returned: this makes `limit=0` and
+    an offset past the end terminal (`has_more: false`, `next_offset: null`) instead
+    of handing back a non-advancing `next_offset` that traps a paging loop.
+    """
+    rows = _df_to_rows(_apply_rounding(df.slice(offset, limit), round_to))
+    has_more = len(rows) > 0 and offset + limit < total_rows
     return {
         "result_id": result_id,
         "offset": offset,
@@ -407,8 +413,11 @@ def _encode_row_page(
 
     gzip is silently downgraded to plain when compression would not shrink the
     payload; the returned `encoding` field always reflects what was emitted.
+
+    `has_more` is false whenever nothing was returned, so `limit=0` and offsets past
+    the end are terminal (`next_offset: null`) rather than looping forever.
     """
-    has_more = offset + limit < total_rows
+    has_more = df_slice.height > 0 and offset + limit < total_rows
     resp: Dict[str, Any] = {
         "result_id": result_id,
         "offset": offset,
@@ -1093,9 +1102,10 @@ class QueryEngine:
         meta = await self.store.get_metadata(result_id)
         if meta is None:
             raise tool_error("RESULT_NOT_FOUND", f"Result set '{result_id}' not found.")
-        # update access to extend TTL
-        await self.store.update_access(result_id)
-        return meta
+        # update access to extend the idle TTL; returns metadata refreshed with the real
+        # sliding expiry so `expires_at` reporting is truthful rather than the static cap.
+        updated = await self.store.update_access(result_id)
+        return updated if updated is not None else meta
 
     async def _load_full_df(self, result_id: str, columns: Optional[List[str]] = None) -> pl.DataFrame:
         meta = await self._ensure_owned(result_id)
@@ -1284,7 +1294,7 @@ class QueryEngine:
             "column_count": meta.column_count,
             "stored_size_bytes": meta.stored_size_bytes,
             "created_at": meta.created_at.isoformat(),
-            "expires_at": meta.absolute_expires_at.isoformat(),
+            "expires_at": (meta.expires_at or meta.absolute_expires_at).isoformat(),
             "columns": [
                 {**c.model_dump(), "description": self._get_description(c, meta)}
                 for c in meta.columns
@@ -1466,6 +1476,7 @@ class QueryEngine:
         encoding: str = "plain",
         round_to: Optional[int] = None,
         stable_sort: bool = True,
+        result_label: Optional[str] = None,
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit, offset = self._clamp_page(limit, offset)
         meta = await self._ensure_owned(result_id)
@@ -1473,7 +1484,7 @@ class QueryEngine:
         effective_sort = _stable_tiebreak(sort, meta) if (stable_sort and sort) else sort
 
         if store_result:
-            return await self._store_list_rows(result_id, columns, sort, effective_sort, meta)
+            return await self._store_list_rows(result_id, columns, sort, effective_sort, meta, result_label)
 
         df_slice, total_rows = await self._read_page_slice(result_id, columns, effective_sort, limit, offset, meta)
         df_slice = _apply_rounding(df_slice, round_to)
@@ -1500,7 +1511,7 @@ class QueryEngine:
         end = min(offset + limit, total_rows)
         return await self._load_range_df(result_id, offset, end, columns=columns), total_rows
 
-    async def _store_list_rows(self, result_id, columns, sort, effective_sort, meta) -> ResultSetSummary:
+    async def _store_list_rows(self, result_id, columns, sort, effective_sort, meta, result_label=None) -> ResultSetSummary:
         # Load full table if sorting, to ensure sort columns are present before projection.
         df = await self._load_full_df(result_id) if effective_sort else await self._load_full_df(result_id, columns=columns)
         if effective_sort:
@@ -1511,7 +1522,8 @@ class QueryEngine:
         params = {"columns": columns, "sort": [s.model_dump() for s in sort] if sort else None}
         return await self._store_derived(
             df, op="list_rows", parent_id=result_id, parameters=params,
-            columns_info=cols_info, grain="one row per source row", parent_meta=meta,
+            columns_info=cols_info, grain="one row per source row",
+            parent_meta=meta, result_label=result_label,
         )
 
     async def count_rows(
@@ -1534,6 +1546,8 @@ class QueryEngine:
         limit: int = 50,
         offset: int = 0,
         store_result: bool = False,
+        result_label: Optional[str] = None,
+        round_to: Optional[int] = None,
     ) -> Union[Dict[str, Any], ResultSetSummary]:
         limit, offset = self._clamp_page(limit, offset)
         meta = await self._ensure_owned(result_id)
@@ -1552,9 +1566,10 @@ class QueryEngine:
             }
             return await self._store_derived(
                 df, op="query_rows", parent_id=result_id, parameters=params,
-                columns_info=cols_info, grain="one row per source row", parent_meta=meta,
+                columns_info=cols_info, grain="one row per source row",
+                parent_meta=meta, result_label=result_label,
             )
-        return _format_paginated_result(result_id, df, offset, limit, df.height)
+        return _format_paginated_result(result_id, df, offset, limit, df.height, round_to=round_to)
 
     async def distinct_values(
         self,

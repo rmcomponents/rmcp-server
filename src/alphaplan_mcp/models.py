@@ -5,7 +5,7 @@
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 class ColumnOrigin(str, Enum):
     group_key = "group_key"
@@ -51,12 +51,21 @@ class ResultSetMetadata(BaseModel):
     created_at: datetime
     last_accessed_at: datetime
     absolute_expires_at: datetime
+    #: Actual current expiry, reflecting the sliding idle TTL (updated on each access).
+    #: Backfilled to `absolute_expires_at` by the validator when reading older stored sets.
+    expires_at: Optional[datetime] = None
     row_count: int
     column_count: int
     uncompressed_size_bytes: int
     stored_size_bytes: int
     chunk_count: int
     columns: List[ColumnInfo]
+
+    @model_validator(mode="after")
+    def _backfill_expires_at(self):
+        if self.expires_at is None and self.absolute_expires_at is not None:
+            self.expires_at = self.absolute_expires_at
+        return self
 
 class ResultSetSummary(BaseModel):
     result_id: str

@@ -161,3 +161,49 @@ async def test_load_range(fake_redis):
     full = await store.load_range(summary.result_id, 0, 35)
     assert full is not None
     assert full.num_rows == 35
+
+
+# ---------------------------------------------------------------------------
+# Regression: reported expires_at must reflect the real sliding idle TTL, not the
+# static absolute cap (Bug 2). After creation the set's TTL is max, but after the
+# first access `update_access` slides it to now + idle_ttl (bounded by the cap).
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_expires_at_reflects_idle_ttl_after_access(fake_redis):
+    stale_idle_store = ResultSetStore(
+        fake_redis,
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
+        idle_ttl=10,
+        max_ttl=3600,
+    )
+    summary = await stale_idle_store.store_result(
+        session_id="sess1",
+        provenance=ResultProvenance(op="t"),
+        table=_make_table(3),
+    )
+    now = datetime.now(timezone.utc)
+
+    # At creation the effective expiry is the absolute max.
+    meta0 = await stale_idle_store.get_metadata(summary.result_id)
+    assert meta0 is not None
+    assert (meta0.expires_at - now).total_seconds() >= 3550  # ~max_ttl ahead
+    assert meta0.expires_at == meta0.absolute_expires_at
+
+    # After the first access, the keys are re-armed to the idle TTL window; the
+    # metadata now reports that real (much sooner) expiry rather than the 24h cap.
+    updated = await stale_idle_store.update_access(summary.result_id)
+    assert updated is not None
+    distance = (updated.expires_at - datetime.now(timezone.utc)).total_seconds()
+    assert 0 < distance <= 10 + 2  # idle_ttl window (+clock slack)
+
+
+# Older/backfilled metadata without `expires_at` still deserializes and reports the cap.
+@pytest.mark.asyncio
+async def test_update_access_returns_refreshed_metadata(fake_redis):
+    store = ResultSetStore(fake_redis, prefix=settings_for_tests.REDIS_KEY_PREFIX)
+    summary = await store.store_result(
+        session_id="sess1", provenance=ResultProvenance(op="t"), table=_make_table(3)
+    )
+    updated = await store.update_access(summary.result_id)
+    assert updated is not None
+    assert updated.last_accessed_at >= updated.created_at

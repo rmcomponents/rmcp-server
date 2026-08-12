@@ -1747,3 +1747,58 @@ class TestCategoricalColumns:
 
         rows = await engine.list_rows(summary.result_id, sort=[SortSpec(column="k", direction="asc")])
         assert [r["k"] for r in rows["data"]] == ["a", "a", "b", "c"]
+
+
+# ---------------------------------------------------------------------------
+# Regression: limit=0 pagination must be terminal (Bug 1)
+# ---------------------------------------------------------------------------
+class TestPaginationLimitZero:
+    @pytest.mark.asyncio
+    async def test_list_rows_limit_zero_is_terminal(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.list_rows(result_id, limit=0)
+        assert res["returned"] == 0
+        assert res["data"] == []
+        assert res["has_more"] is False
+        assert res["next_offset"] is None
+
+    @pytest.mark.asyncio
+    async def test_query_rows_limit_zero_is_terminal(self, setup_engine):
+        engine, result_id = setup_engine
+        res = await engine.query_rows(result_id, limit=0)
+        assert res["returned"] == 0
+        assert res["rows"] == []
+        assert res["has_more"] is False
+        assert res["next_offset"] is None
+
+
+# ---------------------------------------------------------------------------
+# Regression: query_rows supports result_label + round_to; list_rows supports result_label (Bug 3)
+# ---------------------------------------------------------------------------
+class TestQueryRowsOptionalParams:
+    @pytest.mark.asyncio
+    async def test_query_rows_store_supports_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        summary = await engine.query_rows(
+            result_id,
+            filters=FilterGroup(clauses=[FilterClause(column="value", operator="gt", value=10)]),
+            store_result=True,
+            result_label="my-query-rows",
+        )
+        assert isinstance(summary, ResultSetSummary)
+        assert summary.result_label == "my-query-rows"
+        info = await engine.get_result_info(summary.result_id)
+        assert info["result_label"] == "my-query-rows"
+
+    @pytest.mark.asyncio
+    async def test_query_rows_supports_round_to(self, setup_engine_float):
+        engine, result_id = setup_engine_float
+        res = await engine.query_rows(result_id, columns=["value"], round_to=0)
+        assert all(isinstance(r["value"], int) for r in res["rows"])
+
+    @pytest.mark.asyncio
+    async def test_list_rows_store_supports_result_label(self, setup_engine):
+        engine, result_id = setup_engine
+        summary = await engine.list_rows(result_id, limit=2, store_result=True, result_label="my-list-rows")
+        assert isinstance(summary, ResultSetSummary)
+        assert summary.result_label == "my-list-rows"
