@@ -79,6 +79,7 @@ mcp.tool()(result_sets.distinct_values)
 mcp.tool()(result_sets.aggregate)
 mcp.tool()(result_sets.group_by)
 mcp.tool()(result_sets.histogram)
+mcp.tool()(result_sets.join)
 mcp.tool()(result_sets.delete_result_set)
 
 @mcp.custom_route("/health", methods=["GET"])

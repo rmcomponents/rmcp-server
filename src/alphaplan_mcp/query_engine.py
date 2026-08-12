@@ -10,6 +10,7 @@ import json
 import logging
 import math
 import re
+from collections import Counter, OrderedDict
 from datetime import date, datetime, time
 from decimal import Decimal
 from typing import Any, Dict, List, Optional, Tuple, Union
@@ -25,12 +26,17 @@ from .models import (
     ColumnOrigin,
     FilterClause,
     FilterGroup,
+    JoinColumnPair,
+    JoinNormalizationReport,
+    JoinReport,
+    JoinResultSummary,
     ResultSetMetadata,
     ResultSetSummary,
     ResultProvenance,
     SortSpec,
 )
 from .result_store import ResultSetStore
+from .utils import NORMALIZE_STEPS, normalize_mpn
 
 logger = logging.getLogger(__name__)
 
@@ -404,6 +410,20 @@ def _format_paginated_result(
         "next_offset": next_offset,
         "rows": rows,
     }
+
+
+# ---------------------------------------------------------------------------
+# join helpers
+# ---------------------------------------------------------------------------
+
+def _is_string_dtype(dtype) -> bool:
+    """Whether a Polars dtype is a string-like type."""
+    str_type = getattr(pl, "String", None) or getattr(pl, "Utf8", None)
+    return dtype == str_type or dtype == pl.Categorical
+
+
+def _apply_suffix(name: str, suffix: str) -> str:
+    return f"{name}{suffix}"
 
 
 # ---------------------------------------------------------------------------
@@ -1379,6 +1399,470 @@ class QueryEngine:
                 "null_count": null_count,
                 "histogram": histogram,
             }
+
+    async def join(
+        self,
+        left_result_id: str,
+        right_result_id: str,
+        on: List[Union[str, JoinColumnPair]],
+        how: str = "left",
+        columns_left: Optional[List[str]] = None,
+        columns_right: Optional[List[str]] = None,
+        suffix: str = "_r",
+        normalize_keys: bool = True,
+        validate: Optional[str] = "many_to_one",
+        indicator: Union[str, bool] = "_join_match",
+        result_label: Optional[str] = None,
+    ) -> JoinResultSummary:
+        """Join two stored result sets on normalized keys and store the result.
+
+        See `tools/result_sets.join` for the full user-facing contract.
+        """
+        # --- argument validation -------------------------------------------------
+        if not on:
+            raise tool_error("INVALID_ARGUMENT", "'on' must list at least one join key.")
+        if how not in ("left", "inner", "right", "full"):
+            raise tool_error("INVALID_ARGUMENT", f"Invalid 'how' value '{how}'. Must be one of 'left', 'inner', 'right', 'full'.", {"offending_value": how})
+        if validate not in (None, "many_to_one", "one_to_one", "one_to_many", "many_to_many"):
+            raise tool_error("INVALID_ARGUMENT", f"Invalid 'validate' value '{validate}'. Must be one of 'many_to_one', 'one_to_one', 'one_to_many', 'many_to_many' or null.", {"offending_value": validate})
+
+        pairs: List[Tuple[str, str]] = []
+        for key in on:
+            if isinstance(key, JoinColumnPair):
+                pairs.append((key.left, key.right))
+            elif isinstance(key, str):
+                pairs.append((key, key))
+            elif isinstance(key, dict):
+                pairs.append((key.get("left"), key.get("right")))
+            else:
+                raise tool_error("INVALID_ARGUMENT", f"Invalid join key entry '{key!r}'. Must be a column name, a {{'left','right'}} pair, or a JoinColumnPair.", {"offending_value": key})
+        for left_col, right_col in pairs:
+            if not isinstance(left_col, str) or not isinstance(right_col, str):
+                raise tool_error("INVALID_ARGUMENT", "Join key columns must be column names.")
+
+        # duplicate key column detection (same left column used twice is an error)
+        left_key_names = [p[0] for p in pairs]
+        right_key_names = [p[1] for p in pairs]
+        if len(left_key_names) != len(set(left_key_names)) or len(right_key_names) != len(set(right_key_names)):
+            raise tool_error("INVALID_ARGUMENT", "Join key columns must be distinct per side.")
+
+        if indicator is False:
+            indicator_name = None
+        elif isinstance(indicator, str):
+            indicator_name = indicator if indicator else None
+        else:  # True -> default name
+            indicator_name = "_join_match"
+
+        # --- ownership / existence -------------------------------------------------
+        left_meta = await self._ensure_owned(left_result_id)
+        right_meta = await self._ensure_owned(right_result_id)
+        for meta in (left_meta, right_meta):
+            if meta.owner_session_id != self.session_id:
+                raise tool_error(
+                    "OWNER_SESSION_MISMATCH",
+                    f"Result set '{meta.result_id}' belongs to a different session.",
+                    {"left_session_id": left_meta.owner_session_id, "right_session_id": right_meta.owner_session_id},
+                )
+
+        # --- load data -------------------------------------------------------------
+        left_df = await self._load_full_df(left_result_id)
+        right_df = await self._load_full_df(right_result_id)
+        left_schema_names = list(left_df.columns)
+        right_schema_names = list(right_df.columns)
+
+        # --- key column resolution & type checks -----------------------------------
+        for left_col, right_col in pairs:
+            if left_col not in left_schema_names:
+                raise tool_error("UNKNOWN_COLUMN", f"Column '{left_col}' does not exist on the left side.", {"available_columns": left_schema_names, "side": "left"})
+            if right_col not in right_schema_names:
+                raise tool_error("UNKNOWN_COLUMN", f"Column '{right_col}' does not exist on the right side.", {"available_columns": right_schema_names, "side": "right"})
+
+        key_is_string: List[bool] = []
+        for (left_col, right_col) in pairs:
+            left_dt = left_df[left_col].dtype
+            right_dt = right_df[right_col].dtype
+            if _is_string_dtype(left_dt) and _is_string_dtype(right_dt):
+                key_is_string.append(True)
+            elif _is_string_dtype(left_dt) != _is_string_dtype(right_dt):
+                raise tool_error(
+                    "JOIN_KEY_TYPE_MISMATCH",
+                    f"Key columns '{left_col}' (left) and '{right_col}' (right) have incompatible types.",
+                    {"left_column": left_col, "left_type": str(left_dt), "right_column": right_col, "right_type": str(right_dt)},
+                )
+            elif left_dt != right_dt:
+                raise tool_error(
+                    "JOIN_KEY_TYPE_MISMATCH",
+                    f"Key columns '{left_col}' (left) and '{right_col}' (right) must share the same type for non-string keys.",
+                    {"left_column": left_col, "left_type": str(left_dt), "right_column": right_col, "right_type": str(right_dt)},
+                )
+            else:
+                key_is_string.append(False)
+
+        # --- projection ------------------------------------------------------------
+        if columns_left is not None:
+            for c in columns_left:
+                if c not in left_schema_names:
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist on the left side.", {"available_columns": left_schema_names, "side": "left"})
+        if columns_right is not None:
+            for c in columns_right:
+                if c not in right_schema_names:
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist on the right side.", {"available_columns": right_schema_names, "side": "right"})
+
+        left_sel = set(columns_left) if columns_left is not None else None
+        right_sel = set(columns_right) if columns_right is not None else None
+        left_out = list(dict.fromkeys(c for c in left_schema_names if c in left_key_names or (left_sel is None or c in left_sel)))
+        right_out = list(dict.fromkeys(c for c in right_schema_names if c in right_key_names or (right_sel is None or c in right_sel)))
+
+        # right-side final naming (collision -> suffix; unresolvable collision -> error)
+        used_names = set(left_out)
+        right_final: List[Tuple[str, str, bool, Optional[int]]] = []  # (orig, final, is_key, key_index)
+        for c in right_out:
+            if c in right_key_names:
+                right_final.append((c, f"__rk_{right_key_names.index(c)}", True, right_key_names.index(c)))
+            else:
+                final = c
+                if final in used_names:
+                    final = _apply_suffix(c, suffix)
+                if final in used_names:
+                    raise tool_error("COLUMN_NAME_COLLISION", f"Column name collision for '{final}'. Rename with a different 'suffix'.", {"conflicting_names": [final]})
+                used_names.add(final)
+                right_final.append((c, final, False, None))
+
+        if indicator_name is not None and indicator_name in used_names:
+            raise tool_error("COLUMN_NAME_COLLISION", f"Indicator column name '{indicator_name}' collides with an existing column.", {"conflicting_names": [indicator_name]})
+
+        # --- normalized shadow keys -----------------------------------------------
+        left_shadow_names = [f"__ln_{i}" for i in range(len(pairs))]
+        right_shadow_names = [f"__rn_{i}" for i in range(len(pairs))]
+        left_raw_cols = [left_df[c].to_list() for c in left_key_names]
+        right_raw_cols = [right_df[c].to_list() for c in right_key_names]
+        if normalize_keys:
+            left_norm_cols = [[normalize_mpn(v) for v in col] for col in left_raw_cols]
+            right_norm_cols = [[normalize_mpn(v) for v in col] for col in right_raw_cols]
+        else:
+            left_norm_cols = left_raw_cols
+            right_norm_cols = right_raw_cols
+
+        any_string_key = any(key_is_string)
+        enabled_steps = list(NORMALIZE_STEPS) if (any_string_key and normalize_keys) else []
+
+        # --- per-row key tuples -> counts / sets -----------------------------------
+        def _key_tuples(cols):
+            return [(t if all(v is not None for v in t) else None) for t in zip(*cols)]
+
+        left_keys = _key_tuples(left_norm_cols)
+        right_keys = _key_tuples(right_norm_cols)
+        left_raw_tuples = _key_tuples(left_raw_cols)
+        right_raw_tuples = _key_tuples(right_raw_cols)
+
+        left_counts = Counter(k for k in left_keys if k is not None)
+        right_counts = Counter(k for k in right_keys if k is not None)
+        left_set = set(left_counts)
+        right_set = set(right_counts)
+
+        def _norm_tuple(raw_tuple):
+            if not normalize_keys:
+                return raw_tuple
+            return tuple(normalize_mpn(v) for v in raw_tuple)
+
+        # distinct raw keys per side (non-null), in first-seen order
+        left_raw_order: "list" = []
+        left_raw_seen = set()
+        for rt in left_raw_tuples:
+            if rt is not None and rt not in left_raw_seen:
+                left_raw_seen.add(rt)
+                left_raw_order.append(rt)
+        right_raw_order, right_raw_seen = [], set()
+        for rt in right_raw_tuples:
+            if rt is not None and rt not in right_raw_seen:
+                right_raw_seen.add(rt)
+                right_raw_order.append(rt)
+
+        def _render_key(value) -> str:
+            if isinstance(value, tuple):
+                return " | ".join(str(v) for v in value)
+            return str(value)
+
+        # altered-key counts (distinct raw keys changed by normalization)
+        def _count_altered(raw_order):
+            if not any_string_key:
+                return 0
+            return sum(1 for rt in raw_order if _norm_tuple(rt) != rt)
+
+        left_keys_altered = _count_altered(left_raw_order)
+        right_keys_altered = _count_altered(right_raw_order)
+
+        # collisions: distinct raw keys collapsing to one normalized key
+        def _collisions(raw_order, side):
+            out = []
+            groups = {}
+            for rt in raw_order:
+                nt = _norm_tuple(rt)
+                if nt is None:
+                    continue
+                groups.setdefault(nt, []).append(rt)
+            for nt, raws in groups.items():
+                if len(raws) > 1:
+                    out.append({
+                        "normalized": _render_key(nt[0] if len(nt) == 1 else nt),
+                        "raw": [_render_key(r[0] if len(r) == 1 else r) for r in raws],
+                        "side": side,
+                    })
+                if len(out) >= 20:
+                    break
+            return out
+
+        left_collisions = _collisions(left_raw_order, "left") if any_string_key else []
+        right_collisions = _collisions(right_raw_order, "right") if any_string_key else []
+
+        # --- cardinality validation (on normalized keys) ----------------------------
+        def _duplicate_payload(counts, side):
+            dupes = [(k, c) for k, c in counts.items() if c > 1]
+            sample = [{"key": _render_key(k[0] if len(k) == 1 else k), "count": c} for k, c in dupes[:20]]
+            return sample
+
+        if validate == "many_to_one":
+            d = _duplicate_payload(right_counts, "right")
+            if d:
+                raise tool_error("CARDINALITY_VIOLATION", "Right-side join keys are not unique (required: many_to_one).", {"keys": d, "side": "right"})
+        elif validate == "one_to_one":
+            d = _duplicate_payload(right_counts, "right")
+            if d:
+                raise tool_error("CARDINALITY_VIOLATION", "Right-side join keys are not unique (required: one_to_one).", {"keys": d, "side": "right"})
+            d = _duplicate_payload(left_counts, "left")
+            if d:
+                raise tool_error("CARDINALITY_VIOLATION", "Left-side join keys are not unique (required: one_to_one).", {"keys": d, "side": "left"})
+        elif validate == "one_to_many":
+            d = _duplicate_payload(left_counts, "left")
+            if d:
+                raise tool_error("CARDINALITY_VIOLATION", "Left-side join keys are not unique (required: one_to_many).", {"keys": d, "side": "left"})
+
+        # --- report metrics ----------------------------------------------------------
+        matched_left_rows = sum(cnt for k, cnt in left_counts.items() if k in right_set)
+        matched_right_rows = sum(cnt for k, cnt in right_counts.items() if k in left_set)
+        unmatched_left_rows = len(left_keys) - matched_left_rows
+        unmatched_right_rows = len(right_keys) - matched_right_rows
+        matched_keys = left_set & right_set
+        left_keys_matched = len(matched_keys)
+        right_keys_matched = len(matched_keys)
+        left_keys_unmatched = len(left_set) - left_keys_matched
+
+        left_unmatched = sorted(left_set - right_set, key=lambda t: min(i for i, k in enumerate(left_keys) if k == t))
+        right_only = sorted(right_set - left_set, key=lambda t: min(i for i, k in enumerate(right_keys) if k == t))
+        # raw renderings for the sample: first raw key seen for each normalized key
+        left_raw_by_norm = {}
+        for rt in left_raw_order:
+            left_raw_by_norm.setdefault(_norm_tuple(rt), rt)
+        right_raw_by_norm = {}
+        for rt in right_raw_order:
+            right_raw_by_norm.setdefault(_norm_tuple(rt), rt)
+
+        unmatched_sample: List[str] = []
+        for k in left_unmatched:
+            raw = left_raw_by_norm.get(k)
+            if raw is None:
+                continue
+            v = _render_key(raw[0] if len(raw) == 1 else raw)
+            if v not in unmatched_sample:
+                unmatched_sample.append(v)
+            if len(unmatched_sample) >= 20:
+                break
+        for k in right_only:
+            raw = right_raw_by_norm.get(k)
+            if raw is None:
+                continue
+            v = _render_key(raw[0] if len(raw) == 1 else raw)
+            if v not in unmatched_sample:
+                unmatched_sample.append(v)
+            if len(unmatched_sample) >= 20:
+                break
+
+        # matches gained purely by normalization (left rows matched under norm, not under raw)
+        matches_gained_by_normalization = 0
+        if any_string_key and any(enabled_steps):
+            right_raw_set = set(right_raw_tuples) if right_raw_tuples else set()
+            # exclude None entries
+            right_raw_set.discard(None)
+            for k, rt in zip(left_keys, left_raw_tuples):
+                if k is None or rt is None:
+                    continue
+                if k in right_set and rt not in right_raw_set:
+                    matches_gained_by_normalization += 1
+
+        # --- exact output-size estimate (before materialization) --------------------
+        estimated_rows = 0
+        for k, cnt in left_counts.items():
+            rc = right_counts.get(k, 0)
+            if rc and rc > 0:
+                estimated_rows += rc * cnt
+            elif how in ("left", "full"):
+                estimated_rows += cnt
+        if how in ("right", "full"):
+            estimated_rows += unmatched_right_rows
+        if estimated_rows > self.settings.RESULTSET_MAX_ROWS:
+            raise tool_error(
+                "RESULT_SET_TOO_LARGE",
+                f"Join output would exceed {self.settings.RESULTSET_MAX_ROWS} rows.",
+                {"estimated_row_count": estimated_rows},
+            )
+
+        # --- polars join ------------------------------------------------------------
+        ljoin = left_df.with_columns(
+            [pl.Series(name, col) for name, col in zip(left_shadow_names, left_norm_cols)]
+            + [pl.lit(1).alias("__sideL")]
+        ).select(left_out + left_shadow_names + ["__sideL"])
+
+        right_select_exprs = []
+        for orig, final, is_key, _ki in right_final:
+            if is_key:
+                right_select_exprs.append(pl.col(orig).alias(final))
+            else:
+                right_select_exprs.append(pl.col(orig).alias(final))
+        right_select_exprs += [pl.Series(name, col) for name, col in zip(right_shadow_names, right_norm_cols)]
+        right_select_exprs.append(pl.lit(1).alias("__sideR"))
+        rjoin = right_df.select(right_select_exprs)
+
+        joined = ljoin.join(rjoin, left_on=left_shadow_names, right_on=right_shadow_names, how=how)
+
+        def _indicator_expr():
+            is_left = pl.col("__sideL").is_not_null()
+            is_right = pl.col("__sideR").is_not_null()
+            return (
+                pl.when(is_left & is_right).then(pl.lit("both"))
+                .when(is_left).then(pl.lit("left_only"))
+                .otherwise(pl.lit("right_only"))
+            )
+
+        # keys are already named by their left-side column name; right-side columns
+        # were renamed (suffix) in `rjoin`, so reference the final names below.
+        if how in ("right", "full"):
+            out_cols: List[pl.Expr] = [
+                pl.coalesce([pl.col(left_col), pl.col(f"__rk_{i}")]).alias(left_col)
+                for i, (left_col, right_col) in enumerate(pairs)
+            ]
+            out_cols += [pl.col(c) for c in left_out if c not in left_key_names]
+            out_cols += [pl.col(final) for orig, final, is_key, _ki in right_final if not is_key]
+            if indicator_name is not None:
+                out_cols.append(_indicator_expr().alias(indicator_name))
+            result_df = joined.select(out_cols)
+        else:
+            out_cols = [pl.col(c) for c in left_out]
+            out_cols += [pl.col(final) for orig, final, is_key, _ki in right_final if not is_key]
+            if indicator_name is not None:
+                out_cols.append(_indicator_expr().alias(indicator_name))
+            result_df = joined.select(out_cols)
+
+        # --- column info ------------------------------------------------------------
+        left_info_map = {c.name: c for c in left_meta.columns}
+        right_info_map = {c.name: c for c in right_meta.columns}
+        cols_info: List[ColumnInfo] = []
+
+        def _clean_type(dtype_str: str) -> str:
+            return "string" if dtype_str == "large_string" else dtype_str
+
+        for c in left_out:
+            pc = left_info_map.get(c)
+            cols_info.append(ColumnInfo(
+                name=c,
+                type=_clean_type(pc.type if pc else "string"),
+                null_count=0, non_null_count=0,
+                description=pc.description if pc else None,
+                origin=ColumnOrigin.join_left, source_column=c,
+            ))
+        for orig, final, is_key, _ki in right_final:
+            if is_key:
+                continue
+            pc = right_info_map.get(orig)
+            cols_info.append(ColumnInfo(
+                name=final,
+                type=_clean_type(pc.type if pc else "string"),
+                null_count=0, non_null_count=0,
+                description=pc.description if pc else None,
+                origin=ColumnOrigin.join_right, source_column=orig,
+            ))
+        if indicator_name is not None:
+            cols_info.append(ColumnInfo(
+                name=indicator_name,
+                type="string",
+                null_count=0, non_null_count=0,
+                description="Join match indicator: 'both', 'left_only', or 'right_only'",
+                origin=ColumnOrigin.join_generated,
+            ))
+
+        # matched output rows (both side rows that paired up)
+        matched_output_rows = 0
+        for k, cnt in left_counts.items():
+            rc = right_counts.get(k, 0)
+            if rc and rc > 0:
+                matched_output_rows += rc * cnt
+
+        report = JoinReport(
+            how=how,
+            indicator_column=indicator_name,
+            matched_rows=matched_output_rows,
+            unmatched_left_rows=unmatched_left_rows,
+            unmatched_right_rows=unmatched_right_rows,
+            left_keys_total=len(left_set),
+            left_keys_matched=left_keys_matched,
+            left_keys_unmatched=left_keys_unmatched,
+            right_keys_total=len(right_set),
+            right_keys_matched=right_keys_matched,
+            unmatched_key_sample=unmatched_sample,
+            normalization=JoinNormalizationReport(
+                enabled=enabled_steps,
+                left_keys_altered=left_keys_altered,
+                right_keys_altered=right_keys_altered,
+                matches_gained_by_normalization=matches_gained_by_normalization,
+                collisions=left_collisions + right_collisions,
+            ),
+        )
+
+        # --- grain ------------------------------------------------------------------
+        if validate in ("one_to_many", "many_to_many") or how == "full":
+            grain = None
+        elif how == "right":
+            grain = right_meta.grain
+        else:
+            grain = left_meta.grain
+
+        if how in ("right", "full"):
+            source_row_count = right_meta.row_count if how == "right" else None
+        else:
+            source_row_count = left_meta.row_count
+
+        on_params = [o.model_dump() if isinstance(o, JoinColumnPair) else o for o in on]
+        provenance = ResultProvenance(
+            op="join",
+            parents=[left_result_id, right_result_id],
+            parameters={
+                "on": on_params,
+                "how": how,
+                "validate": validate,
+                "suffix": suffix,
+                "normalize_keys": normalize_keys,
+                "columns_left": columns_left,
+                "columns_right": columns_right,
+                "indicator": indicator if indicator is not False else False,
+            },
+        )
+        source = {
+            "op": "join",
+            "parents": [left_result_id, right_result_id],
+            "on": on_params,
+            "how": how,
+            "validate": validate,
+        }
+
+        summary = await self._store_result_from_df(
+            result_df,
+            provenance=provenance,
+            columns=cols_info,
+            source=source,
+            grain=grain,
+            source_row_count=source_row_count,
+            result_label=result_label,
+        )
+        return JoinResultSummary(**summary.model_dump(), join=report)
 
     async def delete_result_set(self, result_id: str) -> Dict[str, Any]:
         meta = await self._ensure_owned(result_id)

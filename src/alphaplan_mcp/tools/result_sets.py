@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Union
 from fastmcp import Context
 
 from ..errors import ToolError, tool_error
-from ..models import FilterGroup, SortSpec, AggregationSpec, ResultSetSummary
+from ..models import FilterGroup, SortSpec, AggregationSpec, JoinColumnPair, ResultSetSummary
 from ..query_engine import QueryEngine
 from ..result_store import ResultSetStore
 
@@ -279,6 +279,91 @@ async def histogram(
         return e.to_dict()
     except Exception as e:
         logger.exception("histogram failed")
+        return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
+
+
+async def join(
+    left_result_id: str,
+    right_result_id: str,
+    on: List[Union[str, JoinColumnPair]],
+    how: str = "left",
+    columns_left: Optional[List[str]] = None,
+    columns_right: Optional[List[str]] = None,
+    suffix: str = "_r",
+    normalize_keys: bool = True,
+    validate: Optional[str] = "many_to_one",
+    indicator: Union[str, bool] = "_join_match",
+    result_label: Optional[str] = None,
+    ctx: Context = None,
+) -> Union[Dict[str, Any], ResultSetSummary]:
+    """Join two stored result sets on shared keys and store the combined result.
+
+    Combines two result sets into one chainable result set. This is the only operation
+    that spans more than one `result_id`; it exists to enable questions such as
+    "revenue by product group" when the measures and the dimensions live in different
+    result sets (e.g. `list_part_stats` left-joined with `list_parts`).
+
+    Parameters:
+    - `left_result_id`, `right_result_id`: The two sets. Both must belong to the caller's
+      session (`OWNER_SESSION_MISMATCH` otherwise).
+    - `on`: Join keys. Each entry is either a shared column name (`"ArtikelNummer"`) or an
+      explicit pair (`{"left": "...", "right": "..."}`) when the sides differ. Mixed forms are
+      allowed; multi-column keys are combined with AND. All listed columns must exist on their
+      side.
+    - `how`: "left" (default), "inner", "right" or "full". `left` is the default deliberately:
+      it keeps every left row (right columns null where unmatched) so silent fan-out or dropped
+      rows cannot hide coverage problems. An `inner` join requires asking for `inner` explicitly.
+    - `columns_left` / `columns_right`: Projection per side; `null` means all columns. Join key
+      columns are always retained regardless of projection. Projecting `columns_right` narrowly is
+      strongly recommended — e.g. the full article master carries `Beschreibung` which reaches
+      3,093 characters per row.
+    - `suffix`: Suffix appended to the right-side column when its name collides with a left-side
+      name (default "_r"). An unresolved collision raises `COLUMN_NAME_COLLISION`.
+    - `normalize_keys`: `true` (default) normalizes string keys before matching via a single
+      fixed pipeline (Unicode NFKC, dash folding (U+2011 etc. -> '-'), collapse all whitespace,
+      uppercase, strip non-alphanumeric except '-', '_' and '.'); `false` matches keys on raw
+      equality. The shadow key is used only for matching; emitted key columns carry the original
+      values.
+    - `validate`: Guards the classic silent fan-out bug. Values: "many_to_one" (default; right-side
+      keys must be unique), "one_to_one" (both sides unique), "one_to_many" (left side unique),
+      "many_to_many" (no constraint), or null (no check). A violation raises
+      `CARDINALITY_VIOLATION` with up to 20 offending keys and produces no result set.
+    - `indicator`: Adds a generated match-indicator column recording for every row whether the key
+      was found on both sides ("both"), only on the left ("left_only") or only on the right
+      ("right_only"). Default name "_join_match"; pass `false` to omit the column. For `how="inner"`
+      the column is constant "both" (still emitted, for schema stability). Filtering on
+      `_join_match = "left_only"` then lets `aggregate` / `group_by` / `query_rows` quantify exactly
+      what did not match.
+    - `result_label`: Optional free-text label stored verbatim in metadata.
+
+    Return value: A `JoinResultSummary` — `ResultSetSummary` plus a `join` report containing only
+    structural metrics (never business measures): `matched_rows`, `unmatched_left_rows`,
+    `unmatched_right_rows`, distinct key counts (`left_keys_total/matched/unmatched`,
+    `right_keys_total/matched`), an `unmatched_key_sample` (capped at 20), and `normalization` with
+    `enabled`, `left_keys_altered`, `right_keys_altered`, `matches_gained_by_normalization` and up
+    to 20 `collisions`. If `unmatched_left_rows` is non-zero, quantify the impact with:
+      aggregate(filters=[{column: "_join_match", operator: "eq", value: "left_only"}], ...)
+    and break it down per group with `group_by(..., filters=[...same...])`.
+
+    Chaining: the returned `result_id` is a first-class result set usable by `list_rows`,
+    `query_rows`, `group_by`, `aggregate`, `distinct_values`, `histogram`, `count_rows`,
+    `explain_columns`, `delete_result_set`, and as an input to a further `join`.
+
+    Errors: RESULT_NOT_FOUND, OWNER_SESSION_MISMATCH, UNKNOWN_COLUMN (with `available_columns` and
+    `side`), JOIN_KEY_TYPE_MISMATCH, CARDINALITY_VIOLATION, COLUMN_NAME_COLLISION,
+    RESULT_SET_TOO_LARGE (with `estimated_row_count`), INVALID_ARGUMENT.
+    """
+    try:
+        store: ResultSetStore = ctx.fastmcp.result_store
+        engine = QueryEngine(store, ctx.session_id)
+        return await engine.join(
+            left_result_id, right_result_id, on, how, columns_left, columns_right,
+            suffix, normalize_keys, validate, indicator, result_label
+        )
+    except ToolError as e:
+        return e.to_dict()
+    except Exception as e:
+        logger.exception("join failed")
         return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
 
 
