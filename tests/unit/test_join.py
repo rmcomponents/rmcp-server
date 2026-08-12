@@ -93,7 +93,7 @@ async def test_left_join_projects_right_columns_and_indicator(fake_redis):
     assert summary.join.left_keys_total == 3
     assert summary.join.left_keys_matched == 2
     assert summary.join.left_keys_unmatched == 1
-    assert "A3" in summary.join.unmatched_key_sample
+    assert any(e["key"] == "A3" and e["side"] == "left" for e in summary.join.unmatched_key_sample)
     assert summary.row_count == 3
 
     out = await store.load_table(summary.result_id)
@@ -210,6 +210,8 @@ async def test_report_collisions_carry_normalization_metadata(fake_redis):
     assert set(entry["raw"]) == {"SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"}
     assert entry["caused_by_normalization"] is True
     assert entry["steps_applied"] == ["strip"]
+    # 4.2: collision entries carry a populated count (was always null)
+    assert entry["count"] == 2
 
 
 @pytest.mark.asyncio
@@ -258,7 +260,129 @@ async def test_dry_run_still_enforces_validate(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_trailing_space_matches_with_normalization(fake_redis):
+async def test_dry_run_estimate_includes_null_key_left_rows(fake_redis):
+    """3.3: dry_run estimated_row_count counts NULL-key left rows for left/full joins."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["A1", None, "A2", None], "Netto": [1, 0, 2, 0]}), op="stats")
+    right = await _store(store, "s1", pa.table({"ArtikelNummer": ["A1", "A2"], "WG": ["x", "y"]}), op="parts")
+
+    out = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        dry_run=True,
+    )
+    # 4 left rows all emitted by a left join (2 matched + 2 NULL-key rows)
+    assert out.estimated_row_count == 4
+    assert out.report.unmatched_left_rows == 2  # the 2 NULL-key rows never match
+
+
+@pytest.mark.asyncio
+async def test_dry_run_estimate_participating_and_null(fake_redis):
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["A1", None] * 2, "Netto": list(range(4))}), op="stats")
+    right = await _store(store, "s1", pa.table({"ArtikelNummer": ["A1"], "WG": ["x"]}), op="parts")
+    out = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        dry_run=True,
+    )
+    # 2 A1 rows match (1 right row) + 2 NULL rows emitted = 4
+    assert out.estimated_row_count == 4
+
+
+@pytest.mark.asyncio
+async def test_unmatched_key_sample_labels_side(fake_redis):
+    """4.1: unmatched_key_sample entries are {key, side}."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["L1", "L2"]}), op="stats")
+    right = await _store(store, "s1", pa.table({"ArtikelNummer": ["R1", "R2"], "WG": ["a", "b"]}), op="parts")
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        validate=None,
+    )
+    sample = summary.join.unmatched_key_sample
+    assert all(isinstance(e, dict) and {"key", "side"} <= set(e) for e in sample)
+    assert {"key": "L1", "side": "left"} in sample
+    assert {"key": "R1", "side": "right"} in sample
+
+
+@pytest.mark.asyncio
+async def test_data_quality_excludes_legal_left_same_key_dups(fake_redis):
+    """4.3: legal same-side duplicates (no normalization) are not surfaced as findings."""
+    store = await _build_store(fake_redis)
+    # left has the same article sold in two weeks (two rows, same key) - legal under many_to_one
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["PART-1", "PART-1"], "Netto": [1, 2]}), op="stats")
+    right = await _store(store, "s1", pa.table({"ArtikelNummer": ["PART-1"], "WG": ["x"]}), op="parts")
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        validate="many_to_one",
+    )
+    # legal left-side same-key duplicate is NOT reported (only right side is constrained)
+    assert all(c["side"] != "left" for c in summary.join.data_quality.sample)
+    assert summary.join.data_quality.non_participating_collisions == 0
+
+
+@pytest.mark.asyncio
+async def test_data_quality_keeps_normalization_collisions_on_legal_side(fake_redis):
+    """4.3: a norm-caused collision is kept even on a side validate does not constrain."""
+    store = await _build_store(fake_redis)
+    # left has a normalization collision (comma) but no right-side involvement
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"], "Netto": [1, 2]}), op="stats")
+    right = await _store(store, "s1", pa.table({"ArtikelNummer": ["PART-1"], "WG": ["x"]}), op="parts")
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        validate="many_to_one",
+    )
+    assert any(
+        c["side"] == "left" and c["caused_by_normalization"] and c["steps_applied"] == ["strip"]
+        for c in summary.join.data_quality.sample
+    )
+
+
+@pytest.mark.asyncio
+async def test_data_quality_note_conditional_on_mode(fake_redis):
+    """3.1: provenance data_quality_note reflects the actual mode, not a static template."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS"] * 2, "Netto": [10, 20]}), op="stats")
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS", "SMAJ6,0CA-H-HS"], "WG": ["a", "a"]}),
+        op="parts",
+    )
+    first = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        validate="many_to_one",
+        right_duplicates="first",
+    )
+    meta = await store.get_metadata(first.result_id)
+    note = meta.source["data_quality_note"]
+    assert "deduplicated via 'first'" in note and "kept as-is" not in note
+
+    second = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        validate="many_to_one",
+        right_duplicates="report_only",
+    )
+    meta2 = await store.get_metadata(second.result_id)
+    note2 = meta2.source["data_quality_note"]
+    assert "kept as-is" in note2 and "deduplicated" not in note2
     store = await _build_store(fake_redis)
     left = await _store(store, "s1", pa.table({"ArtikelNummer": ["FM2150-M-HS "]}), op="stats")
     right = await _store(store, "s1", pa.table({"ArtikelNummer": ["FM2150-M-HS"], "WG": ["X"]}), op="parts")
@@ -368,7 +492,7 @@ async def test_report_is_structural_only(fake_redis):
         "how", "indicator_column", "matched_rows", "unmatched_left_rows",
         "unmatched_right_rows", "left_keys_total", "left_keys_matched",
         "left_keys_unmatched", "right_keys_total", "right_keys_matched",
-        "unmatched_key_sample", "normalization",
+        "deduplicated_rows", "unmatched_key_sample", "normalization", "data_quality",
     }
     report_dump = summary.join.model_dump()
     assert set(report_dump.keys()) == structural
@@ -377,6 +501,8 @@ async def test_report_is_structural_only(fake_redis):
         "enabled", "left_keys_altered", "right_keys_altered",
         "matches_gained_by_normalization", "collisions",
     }
+    dq_dump = report_dump["data_quality"]
+    assert set(dq_dump.keys()) == {"non_participating_collisions", "sample"}
     # no business measure appears anywhere in the report
     assert "Netto" not in str(report_dump)
     assert "HauptLieferant" not in str(report_dump)
@@ -512,7 +638,7 @@ async def test_unmatched_left_row_has_null_right_cols(fake_redis):
     assert rows["A3"]["HauptLieferant"] is None
     assert rows["A3"]["Beschreibung"] is None
     assert rows["A3"]["_join_match"] == "left_only"
-    assert "A3" in summary.join.unmatched_key_sample
+    assert any(e["key"] == "A3" and e["side"] == "left" for e in summary.join.unmatched_key_sample)
 
 
 @pytest.mark.asyncio
@@ -589,19 +715,19 @@ async def test_output_size_estimate_before_materialization(fake_redis):
 
 
 @pytest.mark.asyncio
-async def test_owner_session_mismatch(fake_redis):
+async def test_join_across_sessions_allowed(fake_redis):
+    """No ownership checks: joining result sets from different sessions must work (mirrors reads)."""
     store = await _build_store(fake_redis)
     left = await _store(store, "sessA", _stats_table(), op="stats")
     right = await _store(store, "sessB", _parts_table(), op="parts")
-    with pytest.raises(ToolError) as ei:
-        await _engine(store, "sessA").join(
-            left_result_id=left.result_id,
-            right_result_id=right.result_id,
-            on=["ArtikelNummer"],
-        )
-    assert ei.value.code == "OWNER_SESSION_MISMATCH"
-    assert ei.value.details["left_session_id"] == "sessA"
-    assert ei.value.details["right_session_id"] == "sessB"
+    summary = await _engine(store, "sessA").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        how="left",
+        columns_right=["WarenGruppe"],
+    )
+    assert summary.join.matched_rows == 2
 
 
 @pytest.mark.asyncio
@@ -697,3 +823,127 @@ async def test_join_provenance_has_parents(fake_redis):
     assert meta.provenance.op == "join"
     assert meta.provenance.parents == [left.result_id, right.result_id]
     assert meta.provenance.parameters["how"] == "left"
+
+
+@pytest.mark.asyncio
+async def test_non_participating_duplicate_does_not_block(fake_redis):
+    """Rec 1: a right duplicate whose key is absent from the left cannot fan out -> not blocking."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["REAL-1"], "Netto": [5]}), op="stats")
+    # "SMAJ6,0CA-H-HS" and "SMAJ60CA-H-HS" both normalize to "SMAJ60CA-H-HS" (comma stripped),
+    # but that key is absent from the left side -> cannot fan out, must not block.
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS", "REAL-1"],
+                  "WarenGruppe": ["a", "a", "b"]}),
+        op="parts",
+    )
+
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        validate="many_to_one",
+    )
+    # join succeeded despite right-side duplicate "SMAJ60CA-H-HS" (it does not participate)
+    assert summary.join.matched_rows == 1
+    # ...and the finding is surfaced in data_quality
+    assert summary.join.data_quality.non_participating_collisions == 1
+    assert summary.join.data_quality.sample[0]["normalized"] == "SMAJ60CA-H-HS"
+    assert summary.join.data_quality.sample[0]["caused_by_normalization"] is True
+
+
+@pytest.mark.asyncio
+async def test_participating_duplicate_still_blocks(fake_redis):
+    """Rec 1: a right duplicate that also appears on the left MUST still raise."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS"], "Netto": [5]}), op="stats")
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"], "WarenGruppe": ["a", "a"]}),
+        op="parts",
+    )
+    with pytest.raises(ToolError) as ei:
+        await _engine(store, "s1").join(
+            left_result_id=left.result_id,
+            right_result_id=right.result_id,
+            on=["ArtikelNummer"],
+            validate="many_to_one",
+        )
+    assert ei.value.code == "CARDINALITY_VIOLATION"
+    assert ei.value.details["side"] == "right"
+
+
+@pytest.mark.asyncio
+async def test_right_duplicates_first_dedupes_and_records(fake_redis):
+    """Rec 3: 'first' keeps one right row per normalized key, preserves sums, records provenance."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS"] * 2, "Netto": [10, 20]}), op="stats")
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS", "SMAJ6,0CA-H-HS", "OTHER-1"],
+                  "WarenGruppe": ["keep-me", "drop-me", "z"]}),
+        op="parts",
+    )
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        validate="many_to_one",
+        right_duplicates="first",
+        columns_right=["WarenGruppe"],
+    )
+    # two left rows each match the single kept right row -> no fan-out, sum preserved
+    out = await store.load_table(summary.result_id)
+    rows = out.to_pylist()
+    assert len(rows) == 2
+    assert all(r["WarenGruppe"] == "keep-me" for r in rows)  # lowest ordinal kept
+    assert summary.join.deduplicated_rows == 1
+    meta = await store.get_metadata(summary.result_id)
+    assert meta.provenance.parameters["right_duplicates"] == "first"
+    assert meta.provenance.parameters["deduplicated_rows"] == 1
+    # sums preserved across the join
+    agg = await _engine(store, "s1").aggregate(
+        summary.result_id,
+        aggregations=[AggregationSpec(column="Netto", operation="sum", alias="n")],
+    )
+    assert agg["aggregations"]["n"] == 30
+
+
+@pytest.mark.asyncio
+async def test_right_duplicates_report_only_proceeds_with_flag(fake_redis):
+    """Rec 3: 'report_only' proceeds, reports collisions, records the flag in metadata."""
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", pa.table({"ArtikelNummer": ["SMAJ60CA-H-HS"], "Netto": [5]}), op="stats")
+    right = await _store(
+        store, "s1",
+        pa.table({"ArtikelNummer": ["SMAJ6,0CA-H-HS", "SMAJ60CA-H-HS"], "WarenGruppe": ["a", "c"]}),
+        op="parts",
+    )
+    summary = await _engine(store, "s1").join(
+        left_result_id=left.result_id,
+        right_result_id=right.result_id,
+        on=["ArtikelNummer"],
+        validate="many_to_one",
+        right_duplicates="report_only",
+    )
+    assert summary.join.matched_rows == 2  # fan-out occurred (allowed by explicit choice)
+    assert summary.join.deduplicated_rows == 0
+    meta = await store.get_metadata(summary.result_id)
+    assert meta.provenance.parameters["right_duplicates"] == "report_only"
+    assert meta.source["data_quality_note"] is not None
+
+
+@pytest.mark.asyncio
+async def test_right_duplicates_invalid_value(fake_redis):
+    store = await _build_store(fake_redis)
+    left = await _store(store, "s1", _stats_table(), op="stats")
+    right = await _store(store, "s1", _parts_table(), op="parts")
+    with pytest.raises(ToolError) as ei:
+        await _engine(store, "s1").join(
+            left_result_id=left.result_id,
+            right_result_id=right.result_id,
+            on=["ArtikelNummer"],
+            right_duplicates="bogus",
+        )
+    assert ei.value.code == "INVALID_ARGUMENT"

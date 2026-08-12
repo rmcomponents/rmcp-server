@@ -79,7 +79,7 @@ Actual structure (this is **current**; the layout printed in `src/README.md` is 
 │       ├── server.py             # FastMCP app, lifespan, tool registration, /health
 │       ├── config.py             # Settings (pydantic-settings); env-driven
 │       ├── database.py           # pyodbc connections + streaming Arrow-batch fetchers
-│       ├── result_store.py       # ResultSetStore: chunked Redis storage, TTLs, ownership
+│       ├── result_store.py       # ResultSetStore: chunked Redis storage, TTLs, session index
 │       ├── serialization.py      # Arrow IPC (LZ4) <-> bytes; metadata JSON <-> bytes
 │       ├── query_engine.py       # QueryEngine: Polars filter/sort/agg over stored sets
 │       ├── models.py             # Pydantic models (FilterGroup, SortSpec, AggregationSpec, …)
@@ -165,9 +165,10 @@ response rows / derived result set
 2. Every set has an **idle TTL** (`RESULTSET_IDLE_TTL_SECONDS`, default 1 h) extended on access
    (`ResultSetStore.update_access`, bounded by the absolute max) and an **absolute max lifetime**
    (`RESULTSET_MAX_TTL_SECONDS`, default 24 h).
-3. Sets are scoped to the **owning MCP session**; `QueryEngine._ensure_owned` checks metadata
-   but ownership is enforced via the session-index SET and `owner_session_id`. `join` additionally
-   requires both inputs to share the caller's `owner_session_id` (`OWNER_SESSION_MISMATCH` otherwise).
+3. Sets are keyed by `result_id`, not by session. There are **no ownership checks anywhere**:
+   any `result_id` can be read, joined, or deleted regardless of which session created it. The
+   `owner_session_id` metadata field and the `{prefix}:session:{session}:results` index are retained
+   for bookkeeping/listing only; they are never enforced as an access control boundary.
 4. Explicite deletion via `delete_result_set`; TTL expiry is the primary cleanup.
 5. A background `cleanup_loop` (every 300 s, started in lifespan) scans for orphan chunks and
    removes them (`run_cleanup` → `_cleanup_orphans`).
@@ -210,7 +211,7 @@ never a tool failure.
 | `tools/parts.py` | Parts / part-stats tools | `list_parts`, `list_part_stats` |
 | `tools/webshop.py` | Webshop price tool | `get_webshop_prices` |
 | `tools/mouser.py` | Mouser search tool | `search_mouser_parts` |
-| `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set`, `normalize_preview` |
+| `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `describe_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set`, `normalize_preview` |
 | `apis/mouser/api.py` | Mouser REST client | `search_by_part_number` |
 | `apis/mouser/cache.py` | Cache backend & selection point | `RedisMouserCache`, `NullMouserCache`, `default_cache`, `build_cache_key`, `CachedEntry`, `cache_metadata` |
 | `apis/mouser/parts_extraction.py` | Shape raw Mouser payload → purchasing parts | `extract_purchasing_parts` |
@@ -226,17 +227,18 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | Tool | Source | Safety-relevant behavior |
 |---|---|---|
 | `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) | streams, stores, returns summary |
-| `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ `TABLESAMPLE` (applies before filters; no `NOLOCK` on sampled table) |
+| `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master |
 | `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join | `year` **mandatory**; `limit` returns rows inline instead of storing |
 | `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; raises `ToolError` on bad input |
 | `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation |
 
-### Generic result-set tools (all require `result_id`; all session-scoped)
+### Generic result-set tools (all require `result_id`)
 
 | Tool | Purpose | Notable params |
 |---|---|---|
 | `get_result_info` | Metadata + column stats, safe field set (no owner id) | `result_id` |
 | `explain_columns` | Per-column stats, optional `examples` | `columns`, `include_examples` |
+| `describe_columns` | Per-column distribution bundle (mean, stddev, min, percentiles, max, skewness, count_negative, counts); whole set or per group | `columns`, `percentiles` (default `[0.05,.25,.5,.75,.95]`, linear), `filters`, `group_columns` (≤3) |
 | `list_rows` | Paginate raw rows; sorting/projection applied per call | `columns`, `sort`, `limit`, `offset`, `format` (`json`/`csv`), `encoding` (`plain`/`gzip+base64`), `round_to`, `store_result` |
 | `count_rows` | Row count w/ optional filters | `filters` |
 | `query_rows` | Filter + sort + project + paginate | `filters`, `columns`, `sort`, `store_result` |
@@ -244,9 +246,19 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `aggregate` | Single-row aggregation over whole (filtered) set | `aggregations`, `store_result`, `result_label` |
 | `group_by` | Per-group aggregation | `group_columns` (≤3), `aggregations`, `sort`, `store_result`, `result_label` |
 | `histogram` | Binned histogram (numeric/date) or top-N (string) | `column`, `bins` (≤50), `store_result`, `result_label` |
-| `join` | Join two result sets; only cross-`result_id` operation | `left_result_id`, `right_result_id`, `on` (shared name or `{left,right}` pairs), `how` (`left` default), `columns_left`/`columns_right`, `suffix` (`_r`), `normalize_keys` (default on: single fixed `normalize_mpn` pipeline — trim/collapse whitespace, NFKC, dash-fold, uppercase, strip), `validate` (`many_to_one` default), `indicator` (`_join_match`), `result_label`, `dry_run` (`false` default; returns a `JoinDryRunReport` with no `result_id`, still enforcing `validate`/size guard). Returns `JoinResultSummary` (structural report only — no measures; use `aggregate`/`group_by` filtered on the indicator to quantify unmatched rows). On failure, `CARDINALITY_VIOLATION` now carries `keys: [{normalized, count, raw, side, caused_by_normalization, steps_applied}]` in its details. Raises `CARDINALITY_VIOLATION`, `OWNER_SESSION_MISMATCH`, `JOIN_KEY_TYPE_MISMATCH`, `COLUMN_NAME_COLLISION`, `RESULT_SET_TOO_LARGE` (pre-materialization estimate) |
+| `join` | Join two result sets; only cross-`result_id` operation | `left_result_id`, `right_result_id`, `on` (shared name or `{left,right}` pairs), `how` (`left` default), `columns_left`/`columns_right`, `suffix` (`_r`), `normalize_keys` (default on: single fixed `normalize_mpn` pipeline — trim/collapse whitespace, NFKC, dash-fold, uppercase, strip), `validate` (`many_to_one` default; **uniqueness is scoped to participating keys only** — a duplicate absent from the other side cannot fan out and never blocks; it is surfaced in `data_quality`), `right_duplicates` (`error`\|`first`\|`report_only`; default `error`; `first` keeps the lowest-ordinal right row per normalized key and preserves sums, `report_only` proceeds and records a metadata note), `indicator` (`_join_match`), `result_label`, `dry_run` (`false` default; returns a `JoinDryRunReport` with no `result_id`, still enforcing `validate`/size guard). Returns `JoinResultSummary` (structural report only — no measures; use `aggregate`/`group_by` filtered on the indicator to quantify unmatched rows). Report now includes `deduplicated_rows` and a `data_quality` block (`non_participating_collisions`, `sample`). On failure, `CARDINALITY_VIOLATION` carries `keys: [{normalized, count, raw, side, caused_by_normalization, steps_applied}]` in its details. Raises `CARDINALITY_VIOLATION`, `JOIN_KEY_TYPE_MISMATCH`, `COLUMN_NAME_COLLISION`, `RESULT_SET_TOO_LARGE` (pre-materialization estimate) |
 | `delete_result_set` | Explicit deletion | `result_id` |
 | `normalize_preview` | Preview how strings are normalized (join/config pipeline) | `values` (≤100); returns `[{raw, normalized, steps: [...]}]` per input — makes key-collision causes directly observable |
+
+The `aggregations` vocabulary (both `aggregate` and `group_by`) covers (see `models.AggregationSpec`
+and `agent.md` §9.3): `count`, `count_non_null`, `count_distinct` (alias `nunique`), `sum`, `avg`
+(`mean`), `min`, `max`, `median`, `percentile` (`q`, `method` default `linear`), `mode`,
+`trimmed_mean` (`trim`), `stddev`/`variance` (`ddof`), `iqr`, `mad`, `skewness`, `kurtosis`,
+`coefficient_of_variation`, `count_null`, `count_zero`/`count_negative`/`count_positive`,
+`weighted_avg` (`weight_column`), and `ratio` (`denominator_column`). Statistical ops drop nulls;
+pair with `count_null` when the drop matters. An invalid operation raises `INVALID_AGGREGATION`
+with `details.available_operations` listing the vocabulary (mirrors `UNKNOWN_COLUMN` →
+`available_columns`).
 
 ---
 
@@ -337,8 +349,9 @@ uv run python -m alphaplan_mcp
    **Inconsistency to be aware of:** `webshop.py` and `parts.list_part_stats` **raise**
    `ToolError` instead of returning `to_dict()`; keep behavior matching the surrounding tool when
    editing one of them.
-2. **Session ownership** — Every `result_id` access goes through `QueryEngine._ensure_owned`,
-   which also refreshes the idle TTL. Keep this invariant for any new result-set tool.
+2. **Session ownership** — There are **no ownership checks anywhere**; every `result_id` access goes
+   through `QueryEngine._ensure_owned`, which only verifies existence and refreshes the idle TTL.
+   Keep this invariant for any new result-set tool.
 3. **Safety limits** — Enforce `settings.TOOL_*`/`RESULTSET_*` caps before doing work
    (row count, bytes, groups, filter clauses, `in`-list length, bins). Full-table loads are
    refused when `uncompressed_size_bytes > RESULTSET_MAX_BYTES`.

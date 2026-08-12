@@ -247,12 +247,36 @@ case-insensitive by default (`case_sensitive: false`). Set `case_sensitive: true
 ### 9.3 Aggregation Operations
 For `aggregate` and `group_by`, the `operation` field in `AggregationSpec` must be one of:
 - `sum`: Requires `column`.
-- `avg`: Requires `column`.
+- `avg`: Requires `column`. Alias: `mean`.
+- `median`: Requires `column`. Exactly the 50th percentile.
+- `percentile`: Requires `column` and `q` (a quantile in `[0,1]`). Optional `method`
+  (`linear`* | `lower` | `higher` | `nearest` | `midpoint`) selects interpolation — the default
+  of **`linear`** matches numpy/pandas. `median` is unambiguous regardless of method.
+- `mode`: Requires `column`. Most frequent value (first occurrence on ties).
+- `trimmed_mean`: Requires `column` and `trim` (fraction per end, `0 <= trim < 0.5`); trims by
+  linear-quantile bounds then averages.
+- `stddev`: Requires `column`. Optional `ddof` (1* = sample, 0 = population).
+- `variance`: Requires `column`. Optional `ddof` (1* = sample, 0 = population).
+- `iqr`: Requires `column`. `q(0.75) - q(0.25)` (linear).
+- `mad`: Requires `column`. Median absolute deviation (`median(|x - median(x)|)`) — robust spread.
+- `skewness`: Requires `column`.
+- `kurtosis`: Requires `column` (Fisher).
+- `coefficient_of_variation`: Requires `column`. `stddev / mean`.
+- `weighted_avg`: Requires `column` (value) and `weight_column`. `Σ(value·weight) / Σ(weight)`.
+- `ratio`: Requires `column` (numerator) and `denominator_column`. `sum(column)/sum(denominator_column)`.
+  Use `sum(A)/sum(B)`, never an average of per-row ratios, to compute e.g. margin percentage.
 - `count`: Does not accept a `column` (use `column: null`). Counts the number of rows.
 - `count_non_null`: Requires `column`. Counts non-null values.
 - `count_distinct`: Requires `column`. Counts distinct values. Alias: `nunique`.
+- `count_null`: Requires `column`. Counts null values.
+- `count_zero` / `count_negative` / `count_positive`: Require `column`. Count rows in each bucket
+  (nulls excluded). `count_negative` isolates credits/corrections without a separate filtered query.
 - `min`: Requires `column`.
 - `max`: Requires `column`.
+
+All statistical operations **drop nulls** before computing; if you need to know how many were
+dropped, pair them with an explicit `count_null` aggregation. An invalid or unknown `operation`
+raises `INVALID_AGGREGATION` whose `details.available_operations` lists the valid vocabulary.
 
 ### 9.4 Enum Values for `distinct_values` and `histogram`
 - `distinct_values` `order` parameter accepts: `count_desc` (default), `count_asc`, `value_asc`, `value_desc`.
@@ -275,9 +299,22 @@ When `store_result=true` is passed to `list_rows`, `query_rows`, `group_by`, `di
 ### 9.8 Analytics Operate on the Full Parent Set
 `count_rows`, `aggregate`, `group_by`, `distinct_values`, and `histogram` apply their `filters` directly to the full parent result set. You do not need to materialize a subset first to compute metrics. `result_label` is purely organizational and does not affect data.
 
+### 9.8b `describe_columns`
+`describe_columns(result_id, columns, percentiles, filters, group_columns)` returns a per-column
+distribution bundle (count, count_null, mean, stddev, min, percentiles, max, skewness,
+count_negative) over the whole set or per group. It is the statistical companion to
+`explain_columns` (which covers the schema side). Prefer it to `avg` alone when a distribution
+may be skewed — the mean alone is misleading on the revenue columns (mean ≈ 4.3× the median).
+
+### 9.9 Join key diagnostics (recommended defaults)
+- `validate` uniqueness is **scoped to participating keys only**: a duplicate normalized key that is absent from the other side cannot fan out, so it never blocks — it is surfaced in `data_quality.non_participating_collisions` (with a `sample`). A participating duplicate still raises `CARDINALITY_VIOLATION`. This lets dirty master data be reported without turning the guard into a blocker.
+- `right_duplicates="first"` keeps the lowest-ordinal right row per normalized key (row-count and sums preserved) and records `deduplicated_rows` in both the report and provenance — a safe alternative to disabling validation.
+- The report's `normalization.collisions` and `data_quality.sample` entries carry `{normalized, raw, side, caused_by_normalization, steps_applied}`; use `normalize_preview(values)` to confirm which normalization step produced a collision, and `dry_run=true` to obtain the full report without materializing a result set.
+
 ## 10. Tool: `list_parts`
 
-- `sample_n` (optional int): If provided, instructs the SQL server to return a random sample of approximately `n` rows using `TABLESAMPLE`. This is highly performant but applies *before* any filters (`positive_filter_term`, etc.), so the final row count may be less than `n` if filters are also applied. If omitted, all matching rows are returned.
+- `sample_n` (optional int): If provided, returns a random sample of up to `sample_n` rows, drawn **after** all other filters (`positive_filter_term`, `negative_filter_term`, `match_code`) are applied, i.e. a sample of the filtered population. If omitted, all matching rows are returned.
+- `negative_filter_term` defaults to `'TCC%'`, which **silently excludes all `TCC%` articles (tens of thousands of rows)**. When the default is applied, the returned summary carries a prominent `warning` field. Pass `negative_filter_term=None` for the full article master.
 
 ## 11. Tool: `search_mouser_parts`
 

@@ -65,7 +65,7 @@ async def search_mouser_parts(
       MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
     - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
       excluding the checksum line. Preserve LF line endings and the final newline
-      exactly. Verify before using the data.
+      exactly. ***Verify before using the data***.
     """
     try:
         if not mpns:

@@ -98,13 +98,29 @@ class SortSpec(BaseModel):
 class AggregationSpec(BaseModel):
     """A single aggregation.
 
-    Supported `operation` values: `count`, `count_non_null`, `count_distinct` (alias `nunique`),
-    `sum`, `avg` (alias `mean`), `min`, `max`.
+    Supported `operation` values:
+    - `count` (no column; counts rows), `count_non_null`, `count_distinct` (alias `nunique`)
+    - `sum`, `avg` (alias `mean`), `min`, `max`
+    - Central tendency: `median`, `percentile` (needs `q`, optional `method`),
+      `mode`, `trimmed_mean` (needs `trim`), `weighted_avg` (needs `weight_column`)
+    - Spread/shape: `stddev` (optional `ddof`), `variance` (optional `ddof`), `iqr`, `mad`,
+      `skewness`, `kurtosis`, `coefficient_of_variation`
+    - Counts: `count_null`, `count_zero`, `count_negative`, `count_positive`
+    - Ratio: `ratio` (needs `denominator_column`; computes `sum(column)/sum(denominator_column)`)
+
+    All statistical operations exclude nulls before computing (pair with `count_null` if you
+    need to know how many were dropped). Percentiles default to `linear` interpolation.
     """
 
     column: Optional[str] = None  # not used for "count"
     operation: str
     alias: str
+    q: Optional[float] = None  # percentile: quantile in [0, 1]
+    method: str = "linear"  # percentile: linear | lower | higher | nearest | midpoint
+    ddof: int = 1  # stddev / variance: degrees of freedom (1 = sample, 0 = population)
+    trim: Optional[float] = None  # trimmed_mean: fraction to drop from each end, [0, 0.5)
+    weight_column: Optional[str] = None  # weighted_avg: weight column
+    denominator_column: Optional[str] = None  # ratio: denominator column
 
 
 class JoinColumnPair(BaseModel):
@@ -124,6 +140,19 @@ class JoinNormalizationReport(BaseModel):
     collisions: List[Dict[str, Any]] = []
 
 
+class JoinDataQualityReport(BaseModel):
+    """Non-blocking data-quality findings from a join.
+
+    Records collisions that do *not* participate in the join (the offending normalized key is
+    absent from the matching side), so they can never distort a match. These are surfaced, never
+    blocking: they neither raise `CARDINALITY_VIOLATION` nor pause the join. Consumers should
+    treat them as a standing data-quality signal worth cleaning up at the source.
+    """
+
+    non_participating_collisions: int = 0
+    sample: List[Dict[str, Any]] = []
+
+
 class JoinReport(BaseModel):
     """Structural report of a join. Never contains business measures (see AGENTS.md §9)."""
 
@@ -137,8 +166,11 @@ class JoinReport(BaseModel):
     left_keys_unmatched: int = 0
     right_keys_total: int = 0
     right_keys_matched: int = 0
-    unmatched_key_sample: List[str] = []
+    #: number of right-side ROWS removed by `right_duplicates="first"` deduplication (0 = none)
+    deduplicated_rows: int = 0
+    unmatched_key_sample: List[Dict[str, str]] = []
     normalization: JoinNormalizationReport
+    data_quality: JoinDataQualityReport = JoinDataQualityReport()
 
 
 class JoinResultSummary(ResultSetSummary):

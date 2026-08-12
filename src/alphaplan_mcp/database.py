@@ -347,6 +347,8 @@ async def fetch_parts_stream(
     Asynchronously yield part rows as Arrow record batches.
     
     Supports optional positive/negative filtering on ArtikelNummer and match code search.
+    When `sample_n` is set, the sample is taken *after* all other filters are applied, returning
+    up to `sample_n` random rows from the filtered population.
     """
     import asyncio
     from asyncio import Queue
@@ -360,7 +362,7 @@ async def fetch_parts_stream(
             conn = build_connection()
             cursor = conn.cursor()
             
-            base_query = """
+            columns_sql = """
                 SELECT 
                     A.ArtikelNummer, 
                     A.Groesse AS RollengroesseZoll,
@@ -373,37 +375,40 @@ async def fetch_parts_stream(
                     A.Wiederbeschaffungszeit AS Wiederbeschaffungszeit_Tage,
                     WG.Bezeichnung AS WarenGruppe,
                     WG.WarenGruppenNummer AS WarenGruppenNummer
-                FROM {from_clause}
+                FROM ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK)
                 JOIN ALPHAPLAN_EchtDaten.dbo.Adressen L WITH (NOLOCK) ON L.AdressenID = A.HauptLieferantenAdressenID
                 JOIN ALPHAPLAN_EchtDaten.dbo.WarenGruppen WG WITH (NOLOCK) ON WG.WarenGruppenID = A.WarenGruppenID
-                WHERE A.IstArchiviert = 0
-                AND A.ArtikelID > 0
             """
-            if sample_n is not None:
-                # TABLESAMPLE must be applied directly to the physical table.
-                # It conflicts with WITH (NOLOCK), so we omit the hint for the sampled table.
-                from_clause = f"ALPHAPLAN_EchtDaten.dbo.Artikel A TABLESAMPLE ({sample_n} ROWS)"
-            else:
-                from_clause = "ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK)"
-            
-            query = base_query.format(from_clause=from_clause)
-            
+
+            # Build the WHERE clauses (equivalent to `inner_where` below). We do not use
+            # TABLESAMPLE: it samples the physical table *before* filters, i.e. from the wrong
+            # population. Instead we filter first (inner subquery), then take up to sample_n random
+            # rows from the filtered result via `ORDER BY NEWID()`.
             params = []
-            
+            where = (
+                "WHERE A.IstArchiviert = 0 AND A.ArtikelID > 0"
+                " AND WG.Bezeichnung IS NOT NULL AND LTRIM(RTRIM(WG.Bezeichnung)) <> ''"
+            )
+
             if positive_filter_term:
-                query += " AND A.ArtikelNummer LIKE ?"
+                where += " AND A.ArtikelNummer LIKE ?"
                 params.append(positive_filter_term)
-                
+
             if negative_filter_term:
-                query += " AND A.ArtikelNummer NOT LIKE ?"
+                where += " AND A.ArtikelNummer NOT LIKE ?"
                 params.append(negative_filter_term)
-                
+
             if match_code:
-                query += " AND A.MatchCode LIKE ?"
+                where += " AND A.MatchCode LIKE ?"
                 params.append(f"%{match_code}%")
-                
-            query += " ORDER BY A.ArtikelNummer ASC"
-            
+
+            if sample_n is not None:
+                inner = f"{columns_sql}\n{where}"
+                query = f"SELECT TOP (?) * FROM (\n{inner}\n) t ORDER BY NEWID()"
+                params.insert(0, sample_n)
+            else:
+                query = f"{columns_sql}\n{where}\nORDER BY A.ArtikelNummer ASC"
+
             cursor.execute(query, params)
 
             columns = [col[0] for col in cursor.description]

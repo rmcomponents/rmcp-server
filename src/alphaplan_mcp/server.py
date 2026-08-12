@@ -72,6 +72,7 @@ mcp.tool()(webshop.get_webshop_prices)
 
 mcp.tool()(result_sets.get_result_info)
 mcp.tool()(result_sets.explain_columns)
+mcp.tool()(result_sets.describe_columns)
 mcp.tool()(result_sets.list_rows)
 mcp.tool()(result_sets.count_rows)
 mcp.tool()(result_sets.query_rows)

@@ -27,6 +27,7 @@ from .models import (
     FilterClause,
     FilterGroup,
     JoinColumnPair,
+    JoinDataQualityReport,
     JoinDryRunReport,
     JoinNormalizationReport,
     JoinReport,
@@ -348,53 +349,165 @@ def _sha256_b64(text: str) -> str:
 # helpers for aggregation and pagination
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# aggregation operation vocabulary
+# ---------------------------------------------------------------------------
+
+# Operations that count rows / non-null / per-value predicates. Their result type is int64.
+COUNT_OPS = {"count", "count_non_null", "count_distinct", "nunique", "count_null", "count_zero", "count_negative", "count_positive"}
+
+# Operations whose result type is float64 (regardless of source column type).
+FLOAT_OPS = {
+    "avg", "mean", "median", "percentile", "stddev", "variance", "iqr", "mad",
+    "trimmed_mean", "skewness", "kurtosis", "coefficient_of_variation",
+    "weighted_avg", "ratio",
+}
+
+# The full, discoverable operation vocabulary (used for INVALID_AGGREGATION details).
+KNOWN_OPERATIONS = sorted(COUNT_OPS | FLOAT_OPS | {"sum", "min", "max", "mode"})
+
+_QUANTILE_METHODS = {"linear", "lower", "higher", "nearest", "midpoint"}
+
+
+def _build_agg_expr(agg: AggregationSpec) -> pl.Expr:
+    """Translate a single AggregationSpec into a Polars aggregation expression."""
+    op = agg.operation.lower()
+    alias = agg.alias
+
+    if op == "count":
+        if agg.column:
+            raise tool_error("INVALID_AGGREGATION", "count does not accept a column.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        return pl.len().alias(alias)
+
+    if not agg.column:
+        raise tool_error("INVALID_AGGREGATION",
+                         f"{op} requires a column.",
+                         {"available_operations": KNOWN_OPERATIONS})
+
+    col = pl.col(agg.column)
+
+    if op == "count_non_null":
+        expr = col.count()
+    elif op in ("count_distinct", "nunique"):
+        expr = col.n_unique()
+    elif op == "sum":
+        expr = col.sum()
+    elif op == "avg" or op == "mean":
+        expr = col.mean()
+    elif op == "min":
+        expr = col.min()
+    elif op == "max":
+        expr = col.max()
+    elif op == "median":
+        expr = col.median()
+    elif op == "percentile":
+        if agg.q is None:
+            raise tool_error("INVALID_AGGREGATION",
+                             "percentile requires a 'q' parameter between 0 and 1.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        if not (0.0 <= agg.q <= 1.0):
+            raise tool_error("INVALID_AGGREGATION",
+                             f"percentile 'q' must be between 0 and 1, got {agg.q}.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        if agg.method not in _QUANTILE_METHODS:
+            raise tool_error("INVALID_AGGREGATION",
+                             f"percentile method '{agg.method}' invalid; must be one of {sorted(_QUANTILE_METHODS)}.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        expr = col.quantile(agg.q, interpolation=agg.method)
+    elif op == "stddev":
+        expr = col.std(ddof=agg.ddof)
+    elif op == "variance":
+        expr = col.var(ddof=agg.ddof)
+    elif op == "mode":
+        expr = col.mode().first()
+    elif op == "iqr":
+        expr = col.quantile(0.75, interpolation="linear") - col.quantile(0.25, interpolation="linear")
+    elif op == "mad":
+        # median absolute deviation: median(|x - median(x)|). All aggregation exprs skip nulls.
+        expr = (col - col.median()).abs().median()
+    elif op == "trimmed_mean":
+        if agg.trim is None:
+            raise tool_error("INVALID_AGGREGATION",
+                             "trimmed_mean requires a 'trim' fraction between 0 and 0.5.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        if not (0.0 <= agg.trim < 0.5):
+            raise tool_error("INVALID_AGGREGATION",
+                             f"trimmed_mean 'trim' must be between 0 (inclusive) and 0.5 (exclusive), got {agg.trim}.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        c = col.drop_nulls()
+        lo = c.quantile(agg.trim, interpolation="linear")
+        hi = c.quantile(1.0 - agg.trim, interpolation="linear")
+        expr = c.filter((c >= lo) & (c <= hi)).mean()
+    elif op == "skewness":
+        expr = col.skew()
+    elif op == "kurtosis":
+        expr = col.kurtosis()
+    elif op == "coefficient_of_variation":
+        expr = col.std(ddof=1) / col.mean()
+    elif op == "count_null":
+        expr = col.is_null().sum()
+    elif op == "count_zero":
+        expr = (col == 0).fill_null(False).sum()
+    elif op == "count_negative":
+        expr = (col < 0).fill_null(False).sum()
+    elif op == "count_positive":
+        expr = (col > 0).fill_null(False).sum()
+    elif op == "weighted_avg":
+        if not agg.weight_column:
+            raise tool_error("INVALID_AGGREGATION",
+                             "weighted_avg requires a 'weight_column'.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        w = pl.col(agg.weight_column)
+        expr = (col.fill_null(0) * w.fill_null(0)).sum() / w.fill_null(0).sum()
+    elif op == "ratio":
+        if not agg.denominator_column:
+            raise tool_error("INVALID_AGGREGATION",
+                             "ratio requires a 'denominator_column'.",
+                             {"available_operations": KNOWN_OPERATIONS})
+        expr = col.sum() / pl.col(agg.denominator_column).sum()
+    else:
+        raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.",
+                         {"available_operations": KNOWN_OPERATIONS})
+
+    return expr.alias(alias)
+
+
 def _build_agg_exprs(aggregations: List[AggregationSpec]) -> List[pl.Expr]:
     """Translate AggregationSpecs into Polars aggregation expressions.
-    
-    Note: For chunked processing, avg is computed as sum/count. Polars handles 
-    this correctly when aggregating a full DataFrame, but if we ever stream 
+
+    Note: For chunked processing, avg is computed as sum/count. Polars handles
+    this correctly when aggregating a full DataFrame, but if we ever stream
     chunks, we must aggregate sum and count separately to maintain numerical correctness.
     """
+    if not aggregations:
+        raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
+
     agg_exprs = []
     for agg in aggregations:
-        op = agg.operation.lower()
-        alias = agg.alias
-        col = agg.column
-        if op == "count":
-            if col:
-                raise tool_error("INVALID_AGGREGATION", "count does not accept a column.")
-            agg_exprs.append(pl.len().alias(alias))
-        elif op == "count_non_null":
-            if not col:
-                raise tool_error("INVALID_AGGREGATION", "count_non_null requires a column.")
-            agg_exprs.append(pl.col(col).count().alias(alias))
-        elif op in ("count_distinct", "nunique"):
-            if not col:
-                raise tool_error("INVALID_AGGREGATION", f"{op} requires a column.")
-            agg_exprs.append(pl.col(col).n_unique().alias(alias))
-        elif op == "sum":
-            if not col:
-                raise tool_error("INVALID_AGGREGATION", "sum requires a column.")
-            agg_exprs.append(pl.col(col).sum().alias(alias))
-        elif op == "avg":
-            if not col:
-                raise tool_error("INVALID_AGGREGATION", "avg requires a column.")
-            agg_exprs.append(pl.col(col).mean().alias(alias))
-        elif op == "min":
-            if not col:
-                raise tool_error("INVALID_AGGREGATION", "min requires a column.")
-            agg_exprs.append(pl.col(col).min().alias(alias))
-        elif op == "max":
-            if not col:
-                raise tool_error("INVALID_AGGREGATION", "max requires a column.")
-            agg_exprs.append(pl.col(col).max().alias(alias))
-        else:
-            raise tool_error("INVALID_AGGREGATION", f"Unsupported operation '{op}'.")
-    
+        agg_exprs.append(_build_agg_expr(agg))
+
     if not agg_exprs:
         raise tool_error("INVALID_ARGUMENT", "At least one aggregation is required.")
-        
+
     return agg_exprs
+
+
+def _agg_result_type(agg: AggregationSpec, parent_meta: Optional[ResultSetMetadata]) -> str:
+    """Infer the stored column type for an aggregation's result (for store_result)."""
+    op = agg.operation.lower()
+    if op in COUNT_OPS:
+        return "int64"
+    if op in FLOAT_OPS:
+        return "float64"
+    # sum / min / max / mode inherit the source column's numeric (or string) type.
+    p_col = None
+    if parent_meta is not None and agg.column:
+        p_col = next((c for c in parent_meta.columns if c.name == agg.column), None)
+    agg_type = p_col.type if p_col else "float64"
+    if agg_type == "large_string":
+        agg_type = "string"
+    return agg_type
 
 
 _ALIAS_REGEX = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -654,6 +767,134 @@ class QueryEngine:
             "source_row_count": meta.source_row_count,
             "columns": result,
         }
+
+    async def describe_columns(
+        self,
+        result_id: str,
+        columns: Optional[List[str]] = None,
+        percentiles: Optional[List[float]] = None,
+        filters: Optional[FilterGroup] = None,
+        group_columns: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """Return a distribution summary bundle per column.
+
+        The "what am I even looking at" counterpart to `explain_columns` (which covers the
+        schema side). For each requested column it computes `count`, `count_null`, `mean`,
+        `stddev`, `min`, the requested percentiles (linear interpolation), `max`, `skewness`
+        and `count_negative` (how many rows are below zero — useful for spotting credits /
+        corrections). Non-numeric columns report `count`, `count_null` and `distinct_count`
+        instead. Optional `filters` and `group_columns` let the bundle be computed per subset.
+        """
+        meta = await self._ensure_owned(result_id)
+        all_columns = {c.name: c for c in meta.columns}
+        if columns is None:
+            columns = list(all_columns.keys())
+        else:
+            for c in columns:
+                if c not in all_columns:
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{c}' does not exist.",
+                                     {"available_columns": list(all_columns.keys())})
+
+        if percentiles is None:
+            percentiles = [0.05, 0.25, 0.5, 0.75, 0.95]
+        for q in percentiles:
+            if not (0.0 <= q <= 1.0):
+                raise tool_error("INVALID_ARGUMENT",
+                                 f"Percentile value must be between 0 and 1, got {q}.")
+
+        if group_columns and len(group_columns) > self.settings.TOOL_MAX_GROUP_COLUMNS:
+            raise tool_error("INVALID_ARGUMENT",
+                             f"Too many group columns (max {self.settings.TOOL_MAX_GROUP_COLUMNS}).")
+
+        needed_cols = set(columns)
+        if group_columns:
+            needed_cols.update(group_columns)
+            for gc in group_columns:
+                if gc not in all_columns:
+                    raise tool_error("UNKNOWN_COLUMN", f"Column '{gc}' does not exist.",
+                                     {"available_columns": list(all_columns.keys())})
+        if filters and filters.clauses:
+            for clause in filters.clauses:
+                needed_cols.add(clause.column)
+
+        df = await self._load_full_df(result_id, columns=list(needed_cols))
+        schema = {name: df[name].dtype for name in df.columns}
+        if filters and filters.clauses:
+            mask = _build_filter_expr(filters, schema)
+            df = df.filter(mask)
+
+        def _type_of(col_name: str) -> str:
+            t = all_columns[col_name].type
+            return "string" if t == "large_string" else t
+
+        target_cols = [c for c in columns]
+        if group_columns:
+            rows = []
+            for keys, sub in df.group_by(group_columns):
+                key_row = {}
+                for gc, k in zip(group_columns, keys):
+                    key_row[gc] = _normalize_value(k)
+                key_row["columns"] = {
+                    c: self._describe_series(c, sub[c], percentiles) for c in target_cols
+                }
+                rows.append(key_row)
+            return {
+                "result_id": result_id,
+                "grain": f"one row per ({', '.join(group_columns)})",
+                "percentiles": percentiles,
+                "column_types": {c: _type_of(c) for c in target_cols},
+                "groups": rows,
+            }
+
+        return {
+            "result_id": result_id,
+            "grain": "single summary row",
+            "percentiles": percentiles,
+            "columns": [
+                self._describe_series(c, df[c], percentiles) for c in target_cols
+            ],
+        }
+
+    def _describe_series(self, name: str, series: pl.Series, percentiles: List[float]) -> Dict[str, Any]:
+        """Compute the distribution bundle for a single column's values."""
+        null_count = int(series.null_count())
+        count = int(series.len()) - null_count
+        dtype = series.dtype
+        if dtype in (pl.Utf8, pl.Categorical):
+            return {
+                "name": name,
+                "kind": "string",
+                "count": count,
+                "count_null": null_count,
+                "distinct_count": int(series.n_unique()),
+            }
+        if dtype == pl.Boolean:
+            return {
+                "name": name,
+                "kind": "bool",
+                "count": count,
+                "count_null": null_count,
+                "true_count": int(series.fill_null(False).sum()),
+            }
+        nn = series.drop_nulls()
+        is_numeric = dtype.is_numeric()
+        stats = {
+            "name": name,
+            "kind": "numeric" if is_numeric else "temporal",
+            "count": count,
+            "count_null": null_count,
+        }
+        stats["mean"] = _normalize_value(nn.mean())
+        stats["stddev"] = _normalize_value(nn.std())
+        stats["min"] = _normalize_value(nn.min())
+        stats["max"] = _normalize_value(nn.max())
+        if is_numeric:
+            stats["skewness"] = _normalize_value(nn.skew())
+            stats["count_negative"] = int((nn < 0).sum())
+            stats["percentiles"] = {
+                str(q): _normalize_value(nn.quantile(q, interpolation="linear")) for q in percentiles
+            }
+        return stats
 
     async def list_rows(
         self,
@@ -1030,6 +1271,10 @@ class QueryEngine:
         for agg in aggregations:
             if agg.column:
                 needed_cols.add(agg.column)
+            if agg.weight_column:
+                needed_cols.add(agg.weight_column)
+            if agg.denominator_column:
+                needed_cols.add(agg.denominator_column)
         if filters and filters.clauses:
             for clause in filters.clauses:
                 needed_cols.add(clause.column)
@@ -1045,14 +1290,7 @@ class QueryEngine:
         if store_result:
             cols_info = []
             for agg in aggregations:
-                agg_type = "int64"
-                if agg.operation in ("avg", "mean"):
-                    agg_type = "float64"
-                elif agg.operation in ("sum", "min", "max"):
-                    p_col = next((c for c in parent_meta.columns if c.name == agg.column), None)
-                    agg_type = p_col.type if p_col else "float64"
-                    if agg_type == "large_string":
-                        agg_type = "string"
+                agg_type = _agg_result_type(agg, parent_meta)
                 desc = f"aggregate aggregation: {agg.operation} of {agg.column}"
                 if agg.operation == "count" and agg.column is None:
                     desc = "aggregate aggregation: total row count"
@@ -1105,6 +1343,10 @@ class QueryEngine:
         for agg in aggregations:
             if agg.column:
                 needed_cols.add(agg.column)
+            if agg.weight_column:
+                needed_cols.add(agg.weight_column)
+            if agg.denominator_column:
+                needed_cols.add(agg.denominator_column)
         if filters and filters.clauses:
             for clause in filters.clauses:
                 needed_cols.add(clause.column)
@@ -1141,14 +1383,7 @@ class QueryEngine:
                     origin=ColumnOrigin.group_key, source_column=gc
                 ))
             for agg in aggregations:
-                agg_type = "int64"
-                if agg.operation in ("avg", "mean"):
-                    agg_type = "float64"
-                elif agg.operation in ("sum", "min", "max"):
-                    p_col = next((c for c in parent_meta.columns if c.name == agg.column), None)
-                    agg_type = p_col.type if p_col else "float64"
-                    if agg_type == "large_string":
-                        agg_type = "string"
+                agg_type = _agg_result_type(agg, parent_meta)
                 desc = f"group_by aggregation: {agg.operation} of {agg.column}"
                 if agg.operation == "count" and agg.column is None:
                     desc = "group_by aggregation: count of rows"
@@ -1440,6 +1675,7 @@ class QueryEngine:
         suffix: str = "_r",
         normalize_keys: bool = True,
         validate: Optional[str] = "many_to_one",
+        right_duplicates: str = "error",
         indicator: Union[str, bool] = "_join_match",
         result_label: Optional[str] = None,
         dry_run: bool = False,
@@ -1458,6 +1694,8 @@ class QueryEngine:
             raise tool_error("INVALID_ARGUMENT", f"Invalid 'how' value '{how}'. Must be one of 'left', 'inner', 'right', 'full'.", {"offending_value": how})
         if validate not in (None, "many_to_one", "one_to_one", "one_to_many", "many_to_many"):
             raise tool_error("INVALID_ARGUMENT", f"Invalid 'validate' value '{validate}'. Must be one of 'many_to_one', 'one_to_one', 'one_to_many', 'many_to_many' or null.", {"offending_value": validate})
+        if right_duplicates not in ("error", "first", "report_only"):
+            raise tool_error("INVALID_ARGUMENT", f"Invalid 'right_duplicates' value '{right_duplicates}'. Must be one of 'error', 'first', 'report_only'.", {"offending_value": right_duplicates})
 
         pairs: List[Tuple[str, str]] = []
         for key in on:
@@ -1486,16 +1724,9 @@ class QueryEngine:
         else:  # True -> default name
             indicator_name = "_join_match"
 
-        # --- ownership / existence -------------------------------------------------
+        # --- existence -------------------------------------------------------------
         left_meta = await self._ensure_owned(left_result_id)
         right_meta = await self._ensure_owned(right_result_id)
-        for meta in (left_meta, right_meta):
-            if meta.owner_session_id != self.session_id:
-                raise tool_error(
-                    "OWNER_SESSION_MISMATCH",
-                    f"Result set '{meta.result_id}' belongs to a different session.",
-                    {"left_session_id": left_meta.owner_session_id, "right_session_id": right_meta.owner_session_id},
-                )
 
         # --- load data -------------------------------------------------------------
         left_df = await self._load_full_df(left_result_id)
@@ -1611,6 +1842,37 @@ class QueryEngine:
                 right_raw_seen.add(rt)
                 right_raw_order.append(rt)
 
+        # --- right_duplicates="first": deterministic dedup of the right side -------------
+        # Keep the first right row per normalized key (lowest ordinal). This cannot fan out
+        # (each left row matches at most one right row), preserving row-count and sums. The
+        # removed-row count is reported and recorded in provenance so consumers can see it.
+        right_deduplicated_rows = 0
+        if right_duplicates == "first":
+            seen: set = set()
+            mask = []
+            for k in right_keys:
+                if k is None or k not in seen:
+                    if k is not None:
+                        seen.add(k)
+                    mask.append(True)
+                else:
+                    mask.append(False)
+            right_deduplicated_rows = mask.count(False)
+            if right_deduplicated_rows:
+                right_keys = [x for x, m in zip(right_keys, mask) if m]
+                right_raw_tuples = [x for x, m in zip(right_raw_tuples, mask) if m]
+                right_norm_cols = [[v for v, m in zip(col, mask) if m] for col in right_norm_cols]
+                right_raw_cols = [[v for v, m in zip(col, mask) if m] for col in right_raw_cols]
+                right_df = right_df.filter(pl.Series(mask))
+                # recompute count structures and distinct raw order for the filtered side
+                right_counts = Counter(k for k in right_keys if k is not None)
+                right_set = set(right_counts)
+                right_raw_order, right_raw_seen = [], set()
+                for rt in right_raw_tuples:
+                    if rt is not None and rt not in right_raw_seen:
+                        right_raw_seen.add(rt)
+                        right_raw_order.append(rt)
+
         def _render_key(value) -> str:
             if isinstance(value, tuple):
                 return " | ".join(str(v) for v in value)
@@ -1652,7 +1914,7 @@ class QueryEngine:
             }
             return entry
 
-        def _collisions(raw_order, side):
+        def _collisions(raw_order, counts, side):
             out = []
             groups = {}
             for rt in raw_order:
@@ -1662,15 +1924,19 @@ class QueryEngine:
                 groups.setdefault(nt, []).append(rt)
             for nt, raws in groups.items():
                 if len(raws) > 1:
-                    out.append(_collision_entry(nt, raws, side))
+                    out.append(_collision_entry(nt, raws, side, count=counts.get(nt)))
                 if len(out) >= 20:
                     break
             return out
 
-        left_collisions = _collisions(left_raw_order, "left") if any_string_key else []
-        right_collisions = _collisions(right_raw_order, "right") if any_string_key else []
+        left_collisions = _collisions(left_raw_order, left_counts, "left") if any_string_key else []
+        right_collisions = _collisions(right_raw_order, right_counts, "right") if any_string_key else []
 
-        # --- cardinality validation (on normalized keys) ----------------------------
+        # --- cardinality validation (on normalized keys, restricted to participating) --
+        # Rec 1: a duplicate only endangers a result if its key is present on the OTHER side
+        # (that is what fan-out means). Duplicates whose key never matches are reported in
+        # `data_quality`, never blocking. `right_duplicates="report_only"` additionally skips
+        # the right-side uniqueness enforcement and records a flag in result metadata.
         def _group_raws_by_norm(raw_order):
             groups = {}
             for rt in raw_order:
@@ -1680,26 +1946,53 @@ class QueryEngine:
                 groups.setdefault(nt, []).append(rt)
             return groups
 
-        def _duplicate_payload(raw_order, counts, side):
+        def _dup_entries(raw_order, counts, side, predicate):
             groups = _group_raws_by_norm(raw_order)
-            dupes = [(k, c) for k, c in counts.items() if c > 1]
-            return [_collision_entry(k, groups.get(k, []), side, count=c) for k, c in dupes[:20]]
+            out = []
+            for k, c in counts.items():
+                if c > 1 and predicate(k):
+                    out.append(_collision_entry(k, groups.get(k, []), side, count=c))
+            return out
 
-        if validate == "many_to_one":
-            d = _duplicate_payload(right_raw_order, right_counts, "right")
+        right_enforced = validate in ("many_to_one", "one_to_one") and right_duplicates == "error"
+        left_enforced = validate in ("one_to_one", "one_to_many")
+
+        if right_enforced:
+            d = _dup_entries(right_raw_order, right_counts, "right", lambda k: k in left_set)
             if d:
-                raise tool_error("CARDINALITY_VIOLATION", "Right-side join keys are not unique (required: many_to_one).", {"keys": d, "side": "right"})
-        elif validate == "one_to_one":
-            d = _duplicate_payload(right_raw_order, right_counts, "right")
+                raise tool_error("CARDINALITY_VIOLATION", f"Right-side join keys are not unique (required: {validate}).", {"keys": d, "side": "right"})
+        if left_enforced:
+            d = _dup_entries(left_raw_order, left_counts, "left", lambda k: k in right_set)
             if d:
-                raise tool_error("CARDINALITY_VIOLATION", "Right-side join keys are not unique (required: one_to_one).", {"keys": d, "side": "right"})
-            d = _duplicate_payload(left_raw_order, left_counts, "left")
-            if d:
-                raise tool_error("CARDINALITY_VIOLATION", "Left-side join keys are not unique (required: one_to_one).", {"keys": d, "side": "left"})
-        elif validate == "one_to_many":
-            d = _duplicate_payload(left_raw_order, left_counts, "left")
-            if d:
-                raise tool_error("CARDINALITY_VIOLATION", "Left-side join keys are not unique (required: one_to_many).", {"keys": d, "side": "left"})
+                raise tool_error("CARDINALITY_VIOLATION", f"Left-side join keys are not unique (required: {validate}).", {"keys": d, "side": "left"})
+
+        # --- data-quality report (always surfaced, never blocking) ---------------------
+        # Non-participating collisions: duplicate normalized keys absent from the other side,
+        # so they can never distort a match. Reported so the finding is not lost, e.g. the eight
+        # comma-corrupted article numbers that do not appear in the 2025 sales statistics.
+        # (4.3) Filter out legal same-side duplicates that are merely a consequence of the data
+        # grain (e.g. one left row per article per week under many_to_one): they are noise unless
+        # normalization itself collapsed distinct strings. Keep (a) normalization-caused
+        # collisions and (b) duplicates on a side the chosen `validate` mode declares unique.
+        right_side_constrained = validate in ("many_to_one", "one_to_one")
+        left_side_constrained = validate in ("one_to_one", "one_to_many")
+
+        def _dq_is_signal(entry):
+            if entry["steps_applied"]:
+                return True
+            if entry["side"] == "right" and right_side_constrained:
+                return True
+            if entry["side"] == "left" and left_side_constrained:
+                return True
+            return False
+
+        dq_sample = _dup_entries(right_raw_order, right_counts, "right", lambda k: k not in left_set)
+        dq_sample += _dup_entries(left_raw_order, left_counts, "left", lambda k: k not in right_set)
+        dq_sample = [e for e in dq_sample if _dq_is_signal(e)]
+        data_quality = JoinDataQualityReport(
+            non_participating_collisions=len(dq_sample),
+            sample=dq_sample[:20],
+        )
 
         # --- report metrics ----------------------------------------------------------
         matched_left_rows = sum(cnt for k, cnt in left_counts.items() if k in right_set)
@@ -1721,24 +2014,22 @@ class QueryEngine:
         for rt in right_raw_order:
             right_raw_by_norm.setdefault(_norm_tuple(rt), rt)
 
-        unmatched_sample: List[str] = []
-        for k in left_unmatched:
-            raw = left_raw_by_norm.get(k)
+        unmatched_sample: List[Dict[str, str]] = []
+        def _append_unmatched(k, side):
+            raw_by_norm = left_raw_by_norm if side == "left" else right_raw_by_norm
+            raw = raw_by_norm.get(k)
             if raw is None:
-                continue
+                return False
             v = _render_key(raw[0] if len(raw) == 1 else raw)
-            if v not in unmatched_sample:
-                unmatched_sample.append(v)
-            if len(unmatched_sample) >= 20:
+            if any(e["key"] == v and e["side"] == side for e in unmatched_sample):
+                return False
+            unmatched_sample.append({"key": v, "side": side})
+            return len(unmatched_sample) >= 20
+        for k in left_unmatched:
+            if _append_unmatched(k, "left"):
                 break
         for k in right_only:
-            raw = right_raw_by_norm.get(k)
-            if raw is None:
-                continue
-            v = _render_key(raw[0] if len(raw) == 1 else raw)
-            if v not in unmatched_sample:
-                unmatched_sample.append(v)
-            if len(unmatched_sample) >= 20:
+            if _append_unmatched(k, "right"):
                 break
 
         # matches gained purely by normalization (left rows matched under norm, not under raw)
@@ -1761,6 +2052,9 @@ class QueryEngine:
                 estimated_rows += rc * cnt
             elif how in ("left", "full"):
                 estimated_rows += cnt
+        # left rows with a NULL join key are emitted by left/full joins (they never match).
+        if how in ("left", "full"):
+            estimated_rows += left_keys.count(None)
         if how in ("right", "full"):
             estimated_rows += unmatched_right_rows
         if estimated_rows > self.settings.RESULTSET_MAX_ROWS:
@@ -1788,6 +2082,7 @@ class QueryEngine:
             left_keys_unmatched=left_keys_unmatched,
             right_keys_total=len(right_set),
             right_keys_matched=right_keys_matched,
+            deduplicated_rows=right_deduplicated_rows,
             unmatched_key_sample=unmatched_sample,
             normalization=JoinNormalizationReport(
                 enabled=enabled_steps,
@@ -1796,6 +2091,7 @@ class QueryEngine:
                 matches_gained_by_normalization=matches_gained_by_normalization,
                 collisions=left_collisions + right_collisions,
             ),
+            data_quality=data_quality,
         )
 
         # dry run: return the report without materializing anything. `validate` and the
@@ -1915,6 +2211,8 @@ class QueryEngine:
                 "on": on_params,
                 "how": how,
                 "validate": validate,
+                "right_duplicates": right_duplicates,
+                "deduplicated_rows": right_deduplicated_rows,
                 "suffix": suffix,
                 "normalize_keys": normalize_keys,
                 "columns_left": columns_left,
@@ -1922,12 +2220,23 @@ class QueryEngine:
                 "indicator": indicator if indicator is not False else False,
             },
         )
+        if right_duplicates == "first" and right_deduplicated_rows:
+            data_quality_note = f"{right_deduplicated_rows} right rows deduplicated via 'first' (lowest ordinal per normalized key kept)."
+        elif right_duplicates == "report_only":
+            data_quality_note = "Right-side duplicates were kept as-is (report_only); proceed accordingly."
+        elif right_duplicates == "first":
+            data_quality_note = "No right-side duplicates found (right_duplicates='first'); nothing deduplicated."
+        else:
+            data_quality_note = None
         source = {
             "op": "join",
             "parents": [left_result_id, right_result_id],
             "on": on_params,
             "how": how,
             "validate": validate,
+            "right_duplicates": right_duplicates,
+            "deduplicated_rows": right_deduplicated_rows,
+            "data_quality_note": data_quality_note,
         }
 
         summary = await self._store_result_from_df(

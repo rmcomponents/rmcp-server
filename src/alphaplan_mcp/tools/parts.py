@@ -29,11 +29,15 @@ async def list_parts(
     
     Parameters:
     - `positive_filter_term`: Optional. If provided, only fetch parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard (e.g., `ABC%`).
-    - `negative_filter_term`: Optional, defaults to 'TCC%'. Excludes parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard.
+    - `negative_filter_term`: Optional, defaults to 'TCC%'. Excludes parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard. **The default excludes all `TCC%` articles (tens of thousands of rows).** Pass `None` to include them — unless you specifically want the truncated catalog, you very likely do. When the default is applied, the response includes a prominent `warning` noting the exclusion.
     - `match_code`: Optional. If provided, filters parts where `MatchCode` contains this string (LIKE '%match_code%').
-    - `sample_n`: Optional. If provided, instructs SQL Server to return a random sample of approximately `n` rows using `TABLESAMPLE`. This is highly performant but applies *before* any filters, so the final row count may be less than `n` if filters are also applied. If omitted, all matching rows are returned.
+    - `sample_n`: Optional. If provided, returns a random sample of up to `sample_n` rows, drawn
+      **after** all other filters (positive/negative/match_code) are applied, so it is a sample of
+      the filtered population. If omitted, all matching rows are returned.
     
     Filters can be combined. The result set is stored in Redis and managed identically to `list_customers`.
+
+    Note on the default exclusion: with `negative_filter_term` left at its default `'TCC%'`, the catalog is silently truncated to non-`TCC` articles. This is a large, non-obvious cut. Pass `negative_filter_term=None` to fetch the full article master. When the default filter is applied, the returned summary includes a `warning` field stating so.
     """
     store: ResultSetStore = ctx.fastmcp.result_store
 
@@ -62,6 +66,16 @@ async def list_parts(
                 sample_n=sample_n
             ),
         )
+        # Rec 4: surface the silently-truncating default prominently instead of hiding it.
+        default_exclusion = negative_filter_term is not None and negative_filter_term == "TCC%"
+        if default_exclusion:
+            out = summary.model_dump() if isinstance(summary, ResultSetSummary) else dict(summary)
+            out["warning"] = (
+                "The default negative_filter_term 'TCC%' was applied: all ArtikelNummer starting "
+                "with TCC (tens of thousands of articles) are EXCLUDED from this result set. "
+                "If you intended the full article master, re-run with negative_filter_term=None."
+            )
+            return out
         return summary
     except ToolError as e:
         logger.error("ToolError in list_parts: %s", e.message)

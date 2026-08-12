@@ -97,6 +97,49 @@ async def explain_columns(
         return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
 
 
+async def describe_columns(
+    result_id: str,
+    columns: Optional[List[str]] = None,
+    percentiles: Optional[List[float]] = None,
+    filters: Optional[FilterGroup] = None,
+    group_columns: Optional[List[str]] = None,
+    ctx: Context = None,
+):
+    """Return a distribution summary bundle per column.
+
+    The "what am I even looking at" call — pairs with `explain_columns` (which covers the
+    schema side). Use it before drilling into medians/percentiles, e.g. to discover that the
+    mean of `Netto` is dominated by outliers.
+
+    For each requested numeric column it returns: `count`, `count_null`, `mean`, `stddev`,
+    `min`, `max`, `skewness`, `count_negative` (rows below zero — useful for spotting credits /
+    corrections), and the requested `percentiles` (default `[0.05, 0.25, 0.5, 0.75, 0.95]`,
+    linear interpolation). String/bool columns return `count`, `count_null` and (for strings)
+    `distinct_count` instead.
+
+    Parameters:
+    - `result_id`: The stored result set.
+    - `columns`: Optional subset; all columns by default.
+    - `percentiles`: Optional list of quantiles in [0,1] to include.
+    - `filters`: Optional `FilterGroup` to restrict the population first.
+    - `group_columns`: Optional (≤3). When given, the bundle is returned per group as
+      `groups: [{<group col>: value, "columns": {<column>: bundle}}]`; otherwise a single
+      `columns` list over the whole (filtered) set.
+
+    Errors: RESULT_NOT_FOUND, UNKNOWN_COLUMN (returns `available_columns`),
+    INVALID_ARGUMENT.
+    """
+    try:
+        store: ResultSetStore = ctx.fastmcp.result_store
+        engine = QueryEngine(store, ctx.session_id)
+        return await engine.describe_columns(result_id, columns, percentiles, filters, group_columns)
+    except ToolError as e:
+        return e.to_dict()
+    except Exception as e:
+        logger.exception("describe_columns failed")
+        return tool_error("INTERNAL_ERROR", "An unexpected error occurred.").to_dict()
+
+
 async def list_rows(
     result_id: str,
     columns: Optional[List[str]] = None,
@@ -347,6 +390,7 @@ async def join(
     suffix: str = "_r",
     normalize_keys: bool = True,
     validate: Optional[str] = "many_to_one",
+    right_duplicates: str = "error",
     indicator: Union[str, bool] = "_join_match",
     result_label: Optional[str] = None,
     dry_run: bool = False,
@@ -360,8 +404,7 @@ async def join(
     result sets (e.g. `list_part_stats` left-joined with `list_parts`).
 
     Parameters:
-    - `left_result_id`, `right_result_id`: The two sets. Both must belong to the caller's
-      session (`OWNER_SESSION_MISMATCH` otherwise).
+    - `left_result_id`, `right_result_id`: The two result sets to join.
     - `on`: Join keys. Each entry is either a shared column name (`"ArtikelNummer"`) or an
       explicit pair (`{"left": "...", "right": "..."}`) when the sides differ. Mixed forms are
       allowed; multi-column keys are combined with AND. All listed columns must exist on their
@@ -384,6 +427,21 @@ async def join(
       keys must be unique), "one_to_one" (both sides unique), "one_to_many" (left side unique),
       "many_to_many" (no constraint), or null (no check). A violation raises
       `CARDINALITY_VIOLATION` with up to 20 offending keys and produces no result set.
+      **Uniqueness is checked only on participating keys** — a duplicate whose normalized key is
+      absent from the other side cannot fan out and therefore never blocks (it is surfaced in
+      `data_quality` instead). This means dirty master data that does not affect the query is
+      reported, not blocking.
+      **Precedence (4.4):** the right-side uniqueness aspect of `validate` is honoured only when
+      `right_duplicates="error"`. Setting `right_duplicates="first"` or `"report_only"` overrides
+      the right-side check (it is then deduplicated or tolerated respectively); the left-side aspect
+      (`one_to_one`/`one_to_many`) is never overridden by `right_duplicates`.
+    - `right_duplicates`: How to handle duplicate right-side keys. `"error"` (default) follows the
+      `validate` uniqueness check above (participating duplicates raise). `"first"` keeps the first
+      right-side row per normalized key (deterministic, lowest ordinal) and reports the count — this
+      cannot fan out, so it is strictly safer than `many_to_many`, and row-count/sums are preserved.
+      `"report_only"` proceeds with duplicates left in place, surfaces them in `data_quality`, and
+      records a note in the stored result's metadata. The chosen value and any
+      `deduplicated_rows` are recorded in provenance.
     - `indicator`: Adds a generated match-indicator column recording for every row whether the key
       was found on both sides ("both"), only on the left ("left_only") or only on the right
       ("right_only"). Default name "_join_match"; pass `false` to omit the column. For `how="inner"`
@@ -400,9 +458,12 @@ async def join(
     Return value: A `JoinResultSummary` — `ResultSetSummary` plus a `join` report containing only
     structural metrics (never business measures): `matched_rows`, `unmatched_left_rows`,
     `unmatched_right_rows`, distinct key counts (`left_keys_total/matched/unmatched`,
-    `right_keys_total/matched`), an `unmatched_key_sample` (capped at 20), and `normalization` with
+    `right_keys_total/matched`), `deduplicated_rows` (0 unless `right_duplicates="first"`),
+    an `unmatched_key_sample` (capped at 20, each entry `{"key", "side"}`), `normalization` with
     `enabled`, `left_keys_altered`, `right_keys_altered`, `matches_gained_by_normalization` and up
-    to 20 `collisions`. If `unmatched_left_rows` is non-zero, quantify the impact with:
+    to 20 `collisions` (each with a populated `count`), and `data_quality` with
+    `non_participating_collisions` plus a `sample` (non-blocking dirty-data findings). If
+    `unmatched_left_rows` is non-zero, quantify the impact with:
       aggregate(filters=[{column: "_join_match", operator: "eq", value: "left_only"}], ...)
     and break it down per group with `group_by(..., filters=[...same...])`.
 
@@ -410,7 +471,7 @@ async def join(
     `query_rows`, `group_by`, `aggregate`, `distinct_values`, `histogram`, `count_rows`,
     `explain_columns`, `delete_result_set`, and as an input to a further `join`.
 
-    Errors: RESULT_NOT_FOUND, OWNER_SESSION_MISMATCH, UNKNOWN_COLUMN (with `available_columns` and
+    Errors: RESULT_NOT_FOUND, UNKNOWN_COLUMN (with `available_columns` and
     `side`), JOIN_KEY_TYPE_MISMATCH, CARDINALITY_VIOLATION, COLUMN_NAME_COLLISION,
     RESULT_SET_TOO_LARGE (with `estimated_row_count`), INVALID_ARGUMENT.
     """
@@ -419,7 +480,7 @@ async def join(
         engine = QueryEngine(store, ctx.session_id)
         return await engine.join(
             left_result_id, right_result_id, on, how, columns_left, columns_right,
-            suffix, normalize_keys, validate, indicator, result_label, dry_run
+            suffix, normalize_keys, validate, right_duplicates, indicator, result_label, dry_run
         )
     except ToolError as e:
         return e.to_dict()
