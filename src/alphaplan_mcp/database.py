@@ -56,7 +56,7 @@ _PART_COLUMN_DESCRIPTIONS = {
     "RollengroesseZoll": "Roll size in inches.",
     "Beschreibung": "Combined description (short text + long text).",
     "MatchCode": "Search match code for the part.",
-    "Status": "Status field (Feld02).",
+    "Status": "Supplier ability-to-supply indicator (Feld02). Mostly 'rot' (red = cannot supply), 'gelb' (yellow = limited), or 'gruen' (green = no problem). Other values are possible due to data-quality issues.",
     "VPE": "Sales unit (Verpackungseinheit).",
     "HauptLieferant": "Main supplier name.",
     "NachfolgeArtikel": "Successor article number (Feld03).",
@@ -89,12 +89,15 @@ _LINE_ITEM_COLUMN_DESCRIPTIONS = {
     "KundeKlassifizierung": "Counterparty classification code (KundenTyp).",
     "KundeBranche": "Counterparty industry sector (Branche).",
     "Menge": "Quantity (VEAnzahl / packaging-unit count).",
+    "MengeOffen": "Open/remaining quantity still to be taken over (NochZuUebernehmen).",
     "NettoPreisStueckEUR": "Net unit price per piece converted to EUR.",
-    "BelegDatum": "Date of the document; use for the date-range filter. May be much older than LieferDatum / LieferDatumBestaetigt.",
+    "BelegDatum": "Date of the document (B.Datum). No longer used as the date-range filter.",
     "LieferDatum": "Delivery date. For EB (purchasing orders) this is the requested delivery date.",
     "LieferDatumBestaetigt": "Confirmed delivery date. Populated only for EB orders; often empty.",
+    "OriginalDatum": "Original/requested delivery date (AnlieferungsDatumWunsch).",
     "BelegKursFaktor": "Exchange-rate factor of the document (KursFaktor / KursDivisor).",
     "BelegWaehrung": "ISO currency code of the document (e.g. JPY).",
+    "IstArchiviert": "Whether the document is archived (1 = archived, 0 = not archived).",
 }
 
 
@@ -254,14 +257,24 @@ async def fetch_line_items_stream(
     beleg_typ: int,
     date_from: str,
     date_to: str,
+    include_archived: bool = False,
 ) -> AsyncGenerator[pa.RecordBatch, None]:
     """
     Asynchronously yield line items for a single part number within a date range.
 
     Rows come from documents of a single BelegTyp (resolved from the tool's `document_type`
     code, e.g. 'AR' -> 5, 'EB' -> 9, 'ER' -> 10). The counterparty (customer or supplier),
-    the net unit EUR price (`NettoPreisStueckEUR`), and the delivery dates are joined in SQL.
-    The date bounds are inclusive (>= `date_from` and <= `date_to`) on `B.Datum`.
+    the net unit EUR price (`NettoPreisStueckEUR`), the open quantity (`MengeOffen`), and the
+    delivery dates are joined in SQL.
+
+    A row is returned when ANY of the three BP date fields falls inside the inclusive bounds
+    (>= `date_from` and <= `date_to`): `BP.LieferDatum` (LieferDatum),
+    `BP.AnlieferungsDatumBestaetigt` (LieferDatumBestaetigt), or
+    `BP.AnlieferungsDatumWunsch` (OriginalDatum). The document date `B.Datum` (BelegDatum) is
+    still returned but no longer filters rows.
+
+    When `include_archived` is True, documents that are archived (`B.IstArchiviert = 1`) are
+    included; otherwise they are excluded.
     """
     import asyncio
     from asyncio import Queue
@@ -274,7 +287,8 @@ async def fetch_line_items_stream(
         try:
             conn = build_connection()
             cursor = conn.cursor()
-            query = """
+            archived_predicate = "" if include_archived else "B.IstArchiviert = 0 AND "
+            query = f"""
                 SELECT
                     BP.ArtikelNummer,
                     B.BelegNummer,
@@ -282,10 +296,13 @@ async def fetch_line_items_stream(
                     A.KundenTyp AS KundeKlassifizierung,
                     A.Branche AS KundeBranche,
                     BP.VEAnzahl AS Menge,
+                    BP.NochZuUebernehmen AS MengeOffen,
                     ROUND(BP.NettoPreisEinzelX * B.KursFaktor / NULLIF(B.KursDivisor, 0), 5) AS NettoPreisStueckEUR,
                     B.Datum AS BelegDatum,
+                    B.IstArchiviert AS IstArchiviert,
                     BP.LieferDatum AS LieferDatum,
                     BP.AnlieferungsDatumBestaetigt AS LieferDatumBestaetigt,
+                    BP.AnlieferungsDatumWunsch AS OriginalDatum,
                     ROUND(B.KursFaktor / NULLIF(B.KursDivisor, 0), 5) AS BelegKursFaktor,
                     W.WaehrungsKuerzel AS BelegWaehrung
                 FROM ALPHAPLAN_EchtDaten.dbo.BelegePositionen BP
@@ -295,12 +312,19 @@ async def fetch_line_items_stream(
                         ON W.WaehrungenID = B.WaehrungenID
                     JOIN ALPHAPLAN_EchtDaten.dbo.Adressen A
                         ON A.AdressenID = B.AuftragsAdressenID
-                WHERE B.IstArchiviert = 0
-                    AND BP.ArtikelNummer = ?
-                    AND B.Datum >= ? AND B.Datum <= ?
+                WHERE {archived_predicate}BP.ArtikelNummer = ?
+                    AND (
+                        (BP.LieferDatum >= ? AND BP.LieferDatum <= ?)
+                     OR (BP.AnlieferungsDatumBestaetigt >= ? AND BP.AnlieferungsDatumBestaetigt <= ?)
+                     OR (BP.AnlieferungsDatumWunsch >= ? AND BP.AnlieferungsDatumWunsch <= ?)
+                    )
                 ORDER BY BP.ArtikelNummer, B.Datum ASC
             """
-            cursor.execute(query, (beleg_typ, artikel_nummer, date_from, date_to))
+            params = [beleg_typ, artikel_nummer,
+                      date_from, date_to,
+                      date_from, date_to,
+                      date_from, date_to]
+            cursor.execute(query, params)
 
             columns = [col[0] for col in cursor.description]
             while True:

@@ -36,6 +36,12 @@ async def list_parts(
     
     Filters can be combined. The result set is stored in Redis and managed identically to `list_customers`.
 
+    Column semantics worth knowing:
+    - `Status` is the supplier's ability-to-supply indicator (source `Feld02`). It is mostly one of
+      `rot` (red - the supplier cannot supply the part), `gelb` (yellow - limited availability), or
+      `gruen` (green - no supply problem). Other values occasionally appear because of data-quality
+      issues, so do not assume the vocabulary is exhaustive.
+
     Note on the default exclusion: with `negative_filter_term` left at its default `'TCC%'`, the catalog is silently truncated to non-`TCC` articles. This is a large, non-obvious cut. Pass `negative_filter_term=None` to fetch the full article master. When the default filter is applied, the returned summary includes a `warning` field stating so.
     """
     store: ResultSetStore = ctx.fastmcp.result_store
