@@ -268,11 +268,10 @@ async def fetch_line_items_stream(
     the net unit EUR price (`NettoPreisStueckEUR`), the open quantity (`MengeOffen`), and the
     delivery dates are joined in SQL.
 
-    A row is returned when ANY of the three BP date fields falls inside the inclusive bounds
+    A row is returned when ANY of the four date fields falls inside the inclusive bounds
     (>= `date_from` and <= `date_to`): `BP.LieferDatum` (LieferDatum),
-    `BP.AnlieferungsDatumBestaetigt` (LieferDatumBestaetigt), or
-    `BP.AnlieferungsDatumWunsch` (OriginalDatum). The document date `B.Datum` (BelegDatum) is
-    still returned but no longer filters rows.
+    `BP.AnlieferungsDatumBestaetigt` (LieferDatumBestaetigt),
+    `BP.AnlieferungsDatumWunsch` (OriginalDatum), or `B.Datum` (BelegDatum).
 
     When `include_archived` is True, documents that are archived (`B.IstArchiviert = 1`) are
     included; otherwise they are excluded.
@@ -319,10 +318,12 @@ async def fetch_line_items_stream(
                         (BP.LieferDatum >= ? AND BP.LieferDatum <= ?)
                      OR (BP.AnlieferungsDatumBestaetigt >= ? AND BP.AnlieferungsDatumBestaetigt <= ?)
                      OR (BP.AnlieferungsDatumWunsch >= ? AND BP.AnlieferungsDatumWunsch <= ?)
+                     OR (B.Datum >= ? AND B.Datum <= ?)
                     )
                 ORDER BY BP.ArtikelNummer, B.Datum ASC
             """
             params = [beleg_typ, artikel_nummer,
+                      date_from, date_to,
                       date_from, date_to,
                       date_from, date_to,
                       date_from, date_to]

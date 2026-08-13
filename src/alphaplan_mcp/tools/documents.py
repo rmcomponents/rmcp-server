@@ -69,9 +69,9 @@ async def list_line_items(
       orders when you need the full history. Pass `false` to see only active (non-archived)
       documents, or `true` to force including archived ones for any type.
 
-    A row is returned when ANY of the line item's three date fields falls within the inclusive
-    range `[date_from, date_to]`: the delivery date, the confirmed delivery date, or the original/
-    requested delivery date. Each row is one line item and carries:
+    A row is returned when ANY of the line item's four date fields falls within the inclusive
+    range `[date_from, date_to]`: the document date, the delivery date, the confirmed delivery
+    date, or the original/requested delivery date. Each row is one line item and carries:
     - the counterparty (`KundeOderLieferant`) plus its number (`KundenNummer`) and its
       classification and industry sector
       (customer for outgoing document types, supplier for `AA`/`EB`/`ER`),
@@ -79,8 +79,8 @@ async def list_line_items(
       currency and exchange-rate factor are kept in `BelegWaehrung` / `BelegKursFaktor`,
     - `Menge` - the quantity (VEAnzahl) and `MengeOffen` - the open/remaining quantity still to
       be taken over (`NochZuUebernehmen`),
-    - `BelegDatum` - date of the document (`B.Datum`, informational only; not used as the range
-      filter),
+    - `BelegDatum` - date of the document (`B.Datum`); also one of the four date fields the
+      range filter matches on,
     - `LieferDatum` - the delivery date; for `EB` orders this is the requested delivery date,
     - `LieferDatumBestaetigt` - the confirmed delivery date; only populated for `EB`, often empty,
     - `OriginalDatum` - the original/requested delivery date (`AnlieferungsDatumWunsch`),
