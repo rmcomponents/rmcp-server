@@ -85,6 +85,7 @@ _WEBSHOP_PRICE_COLUMN_DESCRIPTIONS = {
 _LINE_ITEM_COLUMN_DESCRIPTIONS = {
     "ArtikelNummer": "Unique article/part number of the line item.",
     "BelegNummer": "Document number (prefix reflects the document type, e.g. 'ER250025').",
+    "KundenNummer": "Counterparty address number (AdressNummer).",
     "KundeOderLieferant": "Counterparty name (customer for outgoing documents, supplier for purchasing documents).",
     "KundeKlassifizierung": "Counterparty classification code (KundenTyp).",
     "KundeBranche": "Counterparty industry sector (Branche).",
@@ -292,6 +293,7 @@ async def fetch_line_items_stream(
                 SELECT
                     BP.ArtikelNummer,
                     B.BelegNummer,
+                    A.AdressNummer AS KundenNummer,
                     A.SuchName AS KundeOderLieferant,
                     A.KundenTyp AS KundeKlassifizierung,
                     A.Branche AS KundeBranche,
