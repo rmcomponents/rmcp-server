@@ -82,6 +82,21 @@ _WEBSHOP_PRICE_COLUMN_DESCRIPTIONS = {
     "updated_at": "Timestamp when this price was last updated.",
 }
 
+_LINE_ITEM_COLUMN_DESCRIPTIONS = {
+    "ArtikelNummer": "Unique article/part number of the line item.",
+    "BelegNummer": "Document number (prefix reflects the document type, e.g. 'ER250025').",
+    "KundeOderLieferant": "Counterparty name (customer for outgoing documents, supplier for purchasing documents).",
+    "KundeKlassifizierung": "Counterparty classification code (KundenTyp).",
+    "KundeBranche": "Counterparty industry sector (Branche).",
+    "Menge": "Quantity (VEAnzahl / packaging-unit count).",
+    "NettoPreisStueckEUR": "Net unit price per piece converted to EUR.",
+    "BelegDatum": "Date of the document; use for the date-range filter. May be much older than LieferDatum / LieferDatumBestaetigt.",
+    "LieferDatum": "Delivery date. For EB (purchasing orders) this is the requested delivery date.",
+    "LieferDatumBestaetigt": "Confirmed delivery date. Populated only for EB orders; often empty.",
+    "BelegKursFaktor": "Exchange-rate factor of the document (KursFaktor / KursDivisor).",
+    "BelegWaehrung": "ISO currency code of the document (e.g. JPY).",
+}
+
 
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
@@ -214,6 +229,100 @@ async def fetch_webshop_prices_stream(
                 queue.put_nowait(batch)
         except Exception:
             logger.exception("Error fetching webshop prices")
+            queue.put_nowait(None)
+            raise
+        finally:
+            if cursor:
+                cursor.close()
+            if conn:
+                conn.close()
+        queue.put_nowait(None)
+
+    loop = asyncio.get_running_loop()
+    task = loop.run_in_executor(None, _fetch)
+
+    while True:
+        batch = await queue.get()
+        if batch is None:
+            break
+        yield batch
+    await task
+
+
+async def fetch_line_items_stream(
+    artikel_nummer: str,
+    beleg_typ: int,
+    date_from: str,
+    date_to: str,
+) -> AsyncGenerator[pa.RecordBatch, None]:
+    """
+    Asynchronously yield line items for a single part number within a date range.
+
+    Rows come from documents of a single BelegTyp (resolved from the tool's `document_type`
+    code, e.g. 'AR' -> 5, 'EB' -> 9, 'ER' -> 10). The counterparty (customer or supplier),
+    the net unit EUR price (`NettoPreisStueckEUR`), and the delivery dates are joined in SQL.
+    The date bounds are inclusive (>= `date_from` and <= `date_to`) on `B.Datum`.
+    """
+    import asyncio
+    from asyncio import Queue
+
+    queue: Queue[Optional[pa.RecordBatch]] = asyncio.Queue()
+
+    def _fetch():
+        conn = None
+        cursor = None
+        try:
+            conn = build_connection()
+            cursor = conn.cursor()
+            query = """
+                SELECT
+                    BP.ArtikelNummer,
+                    B.BelegNummer,
+                    A.SuchName AS KundeOderLieferant,
+                    A.KundenTyp AS KundeKlassifizierung,
+                    A.Branche AS KundeBranche,
+                    BP.VEAnzahl AS Menge,
+                    ROUND(BP.NettoPreisEinzelX * B.KursFaktor / NULLIF(B.KursDivisor, 0), 5) AS NettoPreisStueckEUR,
+                    B.Datum AS BelegDatum,
+                    BP.LieferDatum AS LieferDatum,
+                    BP.AnlieferungsDatumBestaetigt AS LieferDatumBestaetigt,
+                    ROUND(B.KursFaktor / NULLIF(B.KursDivisor, 0), 5) AS BelegKursFaktor,
+                    W.WaehrungsKuerzel AS BelegWaehrung
+                FROM ALPHAPLAN_EchtDaten.dbo.BelegePositionen BP
+                    JOIN ALPHAPLAN_EchtDaten.dbo.Belege B
+                        ON BP.BelegeID = B.BelegeID AND B.BelegTyp = ?
+                    JOIN ALPHAPLAN_EchtDaten.dbo.Waehrungen W
+                        ON W.WaehrungenID = B.WaehrungenID
+                    JOIN ALPHAPLAN_EchtDaten.dbo.Adressen A
+                        ON A.AdressenID = B.AuftragsAdressenID
+                WHERE B.IstArchiviert = 0
+                    AND BP.ArtikelNummer = ?
+                    AND B.Datum >= ? AND B.Datum <= ?
+                ORDER BY BP.ArtikelNummer, B.Datum ASC
+            """
+            cursor.execute(query, (beleg_typ, artikel_nummer, date_from, date_to))
+
+            columns = [col[0] for col in cursor.description]
+            while True:
+                rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
+                if not rows:
+                    break
+                dicts = [dict(zip(columns, row)) for row in rows]
+                batch = pa.RecordBatch.from_pylist(dicts)
+                new_fields = []
+                for field in batch.schema:
+                    desc = _LINE_ITEM_COLUMN_DESCRIPTIONS.get(field.name)
+                    if desc:
+                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
+                        new_fields.append(field.with_metadata(metadata))
+                    else:
+                        new_fields.append(field)
+                new_schema = pa.schema(new_fields)
+                cols = [batch.column(i) for i in range(batch.num_columns)]
+                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
+                queue.put_nowait(batch)
+        except Exception:
+            logger.exception("Error fetching purchasing prices")
             queue.put_nowait(None)
             raise
         finally:

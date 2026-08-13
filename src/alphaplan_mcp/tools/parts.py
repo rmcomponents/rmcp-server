@@ -12,7 +12,6 @@ from ..database import fetch_parts_stream, fetch_part_stats_stream
 from ..errors import ToolError
 from ..models import ResultSetSummary, ResultProvenance
 from ..result_store import ResultSetStore
-import pyarrow as pa
 
 logger = logging.getLogger(__name__)
 

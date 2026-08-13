@@ -44,7 +44,7 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
 | 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_customers` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
-| 7 | **Tests** | pytest, rootdir = repo root | 313 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
+| 7 | **Tests** | pytest, rootdir = repo root | 319 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
 | 8 | **Health check** | `GET /health` | Custom route in `server.py`; returns `{"status": "healthy", "redis": "ok"}` or 503 when Redis is unreachable |
 
 The canonical boot path is:
@@ -90,6 +90,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │       │   ├── __init__.py
 │       │   ├── customers.py      # list_customers
 │       │   ├── parts.py          # list_parts, list_part_stats
+│       │   ├── documents.py      # list_line_items
 │       │   ├── webshop.py        # get_webshop_prices
 │       │   ├── mouser.py         # search_mouser_parts
 │       │   └── result_sets.py    # 11 generic result-set tools (incl. join)
@@ -101,7 +102,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 9 test modules, 313 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 10 test modules, 319 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -138,10 +139,11 @@ versions, keep both in sync where they overlap.
 
 ```
 MCP client
-   │  tool call (e.g. list_customers, list_parts)
+   │  tool call (e.g. list_customers, list_parts, list_line_items)
    ▼
 tools/*.py  ──►  database.py fetch_*_stream()     # pyodbc, streaming pa.RecordBatch
    │               (blocking ODBC in run_in_executor, batches pushed through asyncio.Queue)
+   │               (list_line_items: also accumulates NettoPreisStueckEUR for its price_summary)
    ▼
 result_store.ResultSetStore.store_result_stream() # enforces row/byte limits, incremental stats
    │                 writes chunk keys + meta key + session index via Redis pipeline
@@ -204,7 +206,7 @@ never a tool failure.
 | `__main__.py` | Entry shim | `main()` from `.server` |
 | `server.py` | FastMCP app; lifespan; tool registration; `/health`; DEBUG `LoggingMiddleware` | `mcp`, `lifespan`, `cleanup_loop`, `health_check`, `main()` |
 | `config.py` | Single source of config truth | `Settings`, `settings` |
-| `database.py` | SQL Server via pyodbc; column-description dictionaries; async stream generators | `build_connection`, `fetch_customers_stream`, `fetch_parts_stream`, `fetch_part_stats_stream`, `fetch_webshop_prices_stream`, `_*_COLUMN_DESCRIPTIONS` |
+| `database.py` | SQL Server via pyodbc; column-description dictionaries; async stream generators | `build_connection`, `fetch_customers_stream`, `fetch_parts_stream`, `fetch_part_stats_stream`, `fetch_line_items_stream`, `fetch_webshop_prices_stream`, `_*_COLUMN_DESCRIPTIONS` |
 | `result_store.py` | Chunked Redis persistence, limits, TTLs, session index, orphan cleanup, incremental stats | `ResultSetStore`, `_IncrementalStats` |
 | `serialization.py` | Encode/decode tables & metadata | `serialize_table` (LZ4 IPC), `deserialize_table`, `serialize_metadata`, `deserialize_metadata` |
 | `query_engine.py` | Polars engine over stored sets: filters, sort, projection, pagination, CSV/gzip encodings, `store_result`, `join` | `QueryEngine`, `_build_filter_expr`, `_apply_sort`, `_build_agg_exprs`, `_validate_aliases`, `_df_to_rows`, `_format_paginated_result`, `join` |
@@ -213,6 +215,7 @@ never a tool failure.
 | `utils.py` | Single shared normalizer (used by Mouser and `join`) | `normalize_mpn` |
 | `tools/customers.py` | Customer ingestion tool | `list_customers` |
 | `tools/parts.py` | Parts / part-stats tools | `list_parts`, `list_part_stats` |
+| `tools/documents.py` | Document line-item tool (configurable by document type) | `list_line_items`, `DOCUMENT_TYPE_BELEG_TYP`, `_price_summary` |
 | `tools/webshop.py` | Webshop price tool | `get_webshop_prices` |
 | `tools/mouser.py` | Mouser search tool | `search_mouser_parts` |
 | `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `describe_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set`, `normalize_preview` |
@@ -233,6 +236,7 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) | streams, stores, returns summary |
 | `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master |
 | `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join | `year` **mandatory**; `limit` returns rows inline instead of storing |
+| `list_line_items(artikel_nummer, document_type, date_from, date_to)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` | One document type per call via `document_type` code → `BelegTyp`: `AN`=2 (Angebot), `AB`=3 (Auftrag), `AL`=4 (Lieferschein Ausgang), `AR`=5 (Rechnung Ausgang), `AA`=8 (Lieferantenanfrage), `EB`=9 (Bestellung — purchasing), `ER`=10 (Rechnung Eingang); inclusive date range `>=`/`<=` on `B.Datum`; joins the counterparty (`KundeOderLieferant` + classification/branch) and delivery dates; uneven `document_type` → `INVALID_ARGUMENT` with `available_document_types`; returns summary **plus** `price_summary` (`min`/`max`/`average`/`median`/`count` of `NettoPreisStueckEUR`) |
 | `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; raises `ToolError` on bad input |
 | `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation |
 
@@ -326,7 +330,7 @@ which shows `../tests/unit/...`) is:
 
 ```bash
 cd src
-uv run pytest ../tests/unit          # all unit tests (313)
+uv run pytest ../tests/unit          # all unit tests (319)
 uv run pytest ../tests/unit/test_query_engine.py   # single module
 ```
 
@@ -337,7 +341,7 @@ Notes:
 - Unit tests mock Redis with fakeredis — no live Redis needed. `tests/integration/` is empty.
 - `tests/unit` modules: `test_query_engine`, `test_result_store`, `test_serialization`,
   `test_mouser_api`, `test_mouser_cache`, `test_search_mouser_parts`, `test_part_stats`,
-  `test_webshop_prices`, `test_join`.
+  `test_list_line_items`, `test_webshop_prices`, `test_join`.
 
 ### Running locally (dev)
 
