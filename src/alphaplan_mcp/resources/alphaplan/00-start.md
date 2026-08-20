@@ -4,8 +4,14 @@ Referenz für Agenten, die gegen die AlphaPlan-SQL-Server-Datenbank `ALPHAPLAN_E
 lesen. Diese Seite enthält alles, was bei **jeder** Query gilt; die Detailseiten werden
 nach Bedarf dazugeladen.
 
-Stand der Analyse: 20.08.2026. Zeilenzahlen sind Größenordnungen. Nicht verifizierte
-Aussagen sind im Text als *(unverifiziert)* markiert.
+Stand der Analyse: 20.08.2026. Nicht verifizierte Aussagen sind im Text als
+*(unverifiziert)* markiert.
+
+> **Stand der Zahlen:** Alle in diesen Dokumenten genannten Zeilenzahlen,
+> Tabellengrößen und Verteilungsangaben sind illustrative Momentaufnahmen vom Stand der
+> Analyse und können von der Live-Datenbank abweichen. Als einziger absoluter Bezug gilt
+> das Datum oben (Stand der Analyse); für verbindliche Größen immer live zählen,
+> nicht auf die hier genannten Werte bauen.
 
 ---
 
@@ -67,8 +73,8 @@ Archivierungsquoten und der Belegkette: `alphaplan://belege`.
 | 10 | ER | Warenzugänge | 27 | EF | Lieferavise |
 | 13 | EV | Bestellvorschläge | 7, 11, 12, 15, 20, 22, 24, 26 | | ungenutzt oder Einzelfälle |
 
-Verkaufsseite `A*`, Einkaufsseite `E*`. Die drei größten Typen sind AV (338.574),
-AL (219.788) und AR (192.326); AB (143.893) ist der fachlich wichtigste.
+Verkaufsseite `A*`, Einkaufsseite `E*`. AV ist mit deutlichem Abstand der größte
+Belegtyp, davor AL und AR; AB ist der fachlich wichtigste.
 
 **Achtung – Fehler im MCP-Tooling:** `list_line_items` dokumentiert `AA` als Typ 8.
 Real ist `AA` = 1 (Verkaufsanfragen) und 8 = `EA` (Lieferantenanfragen).
@@ -116,9 +122,10 @@ Belege ──BelegeID──> BelegePositionen ──ArtikelID──> Artikel ─
 * **Ein Artikel kann in mehreren Lagerorten liegen** – `TOP (1)` über das Abbuchungslager
   ist nicht der Gesamtbestand, und Sperr-/Webshop-/Strategielager zählen nicht in die
   Lagersummen (Stammdaten → `alphaplan://stammdaten`).
-* **`Sachbearbeiter` ist Freitext**, 71.552 Belege ab 2024 haben gar keinen (Sachbearbeiter → `alphaplan://belege`).
+* **`Sachbearbeiter` ist Freitext**, gut 70.000 Belege ab 2024 haben gar keinen (Sachbearbeiter → `alphaplan://belege`).
 * **`AdressGruppenID` statt `IstLieferant`** zur Kunde/Lieferant-Trennung (Stammdaten → `alphaplan://stammdaten`).
-* **`Anschriften` sind Belegkopien**, keine Stammdaten – 269 k Zeilen für 4.320 Adressen (Stammdaten → `alphaplan://stammdaten`).
+* **`Anschriften` sind Belegkopien**, keine Stammdaten – über 250.000 Zeilen für nur
+  wenige tausend Adressen (Stammdaten → `alphaplan://stammdaten`).
 * **57 % der Warenzugangsbelege haben keine Positionen** – ER ist auch der reine
   Eingangsrechnungsbeleg (Belegmodell → `alphaplan://belege`).
 * **MPN-Suche auf Positionen ist ein Full Scan** – erst `ArtikelID` auflösen (Performance → `alphaplan://sql-muster`).

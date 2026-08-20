@@ -9,8 +9,8 @@
 
 Alle Belegarten teilen sich **einen** Kopf- und **einen** Positionsstamm:
 
-* `Belege` (~1,04 Mio Zeilen) – Kopf aller Belegtypen, 255 Spalten
-* `BelegePositionen` (~10,8 Mio Zeilen) – Positionen aller Belegtypen, 192 Spalten
+* `Belege` (im einstelligen Millionenbereich) – Kopf aller Belegtypen, 255 Spalten
+* `BelegePositionen` (rund 11 Mio Zeilen) – Positionen aller Belegtypen, 192 Spalten
 
 Daneben trägt **fast jeder Belegtyp eine gleichnamige Satellitentabelle** mit
 typspezifischen Zusatzfeldern. **Es sind 1:1-Erweiterungen, keine Alternativen:** Kopf-
@@ -33,14 +33,15 @@ und `BestellungenPositionen` (`IstStreckenPosition`, `K_SondermengeFuerKunde`).
 > Typ 14 heißt in `BelegTypen` „Auftragsvorerfassungen", die Satellitentabelle aber
 > `AuftragsVorschlaege`.
 
-> **Konsequenz für Auswertungen:** `AuftragsVorschlaegePos` stellt mit 8,5 Mio Zeilen 79 %
+> **Konsequenz für Auswertungen:** `AuftragsVorschlaegePos` stellt rund 79 %
 > von `BelegePositionen`. Wer ohne Join auf `Belege` und ohne `BelegTyp`-Filter aggregiert,
 > misst überwiegend Auftragsvorerfassungen.
 
 ### Belege ohne Positionen
 
 Verwaiste Positionen gibt es keine, aber **Köpfe ohne jede Position sind häufig**:
-ER 10.093 (**57 %**), AB 5.615 (4 %), AL 699, AR 479, AS 339, EB 268.
+am stärksten bei ER (**57 %**) und AB (4 %); AL, AR, AS und EB folgen mit jeweils nur
+einigen hundert Belegen.
 
 Bei Warenzugängen ist das kein Suchfehler: `WarenZugaenge` ist faktisch der
 **Eingangsrechnungs-/Kreditorenbeleg** und kommt auch ohne Warenbewegung vor (Fracht,
@@ -53,28 +54,29 @@ stillschweigend – für Belegzählungen daher auf `Belege` zählen, nicht auf P
 
 `Belege.BelegTyp` ist `tinyint`. Die Belegnummer trägt das Kürzel als Präfix
 (`AB2618895`), was der zuverlässigste Weg ist, einen Typ zu erkennen.
-Nummernkreis-Schema: `<Kürzel><JJ><laufend>`.
+Nummernkreis-Schema: `<Kürzel><JJ><laufend>`. Bestandsangaben sind gerundete
+Größenordnungen.
 
-| Typ | Kürzel | Bezeichnung | Belege | archiviert | Anmerkung |
+| Typ | Kürzel | Bezeichnung | Bestand (~) | archiviert | Anmerkung |
 |---|---|---|---|---|---|
-| 1 | AA | Anfragen | 161 | 42 % | Verkaufsanfragen, selten genutzt |
-| 2 | AN | Angebote | 70.471 | 94 % | |
-| 3 | AB | Aufträge | 143.893 | **96 %** | Auftragsbestätigungen / Abrufe |
-| 4 | AL | Lieferscheine | 219.788 | **99,8 %** | Ausgangslieferscheine |
-| 5 | AR | Rechnungen | 192.326 | **0,3 %** | Ausgangsrechnungen |
-| 6 | AG | Gutschriften | 927 | 15 % | |
-| 8 | EA | Lieferantenanfragen | 12.831 | 0,8 % | Preisanfragen an Lieferanten, überwiegend TY |
-| 9 | EB | Bestellungen | 14.054 | 95 % | Bestellungen bei Lieferanten |
-| 10 | ER | Warenzugänge | 17.730 | 57 % | Kürzel steht für Eingangsrechnung |
+| 1 | AA | Anfragen | 0,2k | 42 % | Verkaufsanfragen, selten genutzt |
+| 2 | AN | Angebote | 70k | 94 % | |
+| 3 | AB | Aufträge | 144k | **96 %** | Auftragsbestätigungen / Abrufe |
+| 4 | AL | Lieferscheine | 220k | **99,8 %** | Ausgangslieferscheine |
+| 5 | AR | Rechnungen | 192k | **0,3 %** | Ausgangsrechnungen |
+| 6 | AG | Gutschriften | 0,9k | 15 % | |
+| 8 | EA | Lieferantenanfragen | 13k | 0,8 % | Preisanfragen an Lieferanten, überwiegend TY |
+| 9 | EB | Bestellungen | 14k | 95 % | Bestellungen bei Lieferanten |
+| 10 | ER | Warenzugänge | 18k | 57 % | Kürzel steht für Eingangsrechnung |
 | 12 | AP | Packzettel | 1 | – | praktisch ungenutzt |
-| 13 | EV | Bestellvorschläge | 89 | 80 % | selten |
-| 14 | AV | Auftragsvorerfassungen | **338.574** | **99,9 %** | größter Typ; Ziel des Forecast-Imports |
-| 16 | RK | RMA Kunde | 116 | 5 % | |
-| 17 | RL | RMA Lieferant | 19 | 16 % | |
-| 18 | AS | Service Verkauf | 18.419 | 0,8 % | u. a. Musterlieferungen |
-| 19 | ES | Service Einkauf | 5.897 | 13 % | |
-| 21 | EG | Lieferantengutschriften | 117 | 9 % | |
-| 23 | AU | Umbuchungen | 79 | 4 % | abweichendes Nummernschema `AU2610079` |
+| 13 | EV | Bestellvorschläge | 90 | 80 % | selten |
+| 14 | AV | Auftragsvorerfassungen | 339k | **99,9 %** | größter Typ; Ziel des Forecast-Imports |
+| 16 | RK | RMA Kunde | 0,1k | 5 % | |
+| 17 | RL | RMA Lieferant | 20 | 16 % | |
+| 18 | AS | Service Verkauf | 18k | 0,8 % | u. a. Musterlieferungen |
+| 19 | ES | Service Einkauf | 6k | 13 % | |
+| 21 | EG | Lieferantengutschriften | 0,1k | 9 % | |
+| 23 | AU | Umbuchungen | 80 | 4 % | abweichendes Nummernschema `AU2610079` |
 | 25 | EL | Eingangslieferscheine | 1 | – | Einzelfall 2018 |
 | 27 | EF | Lieferavise | 1 | – | Einzelfall 2020 |
 
@@ -92,7 +94,8 @@ Bei AR/EA/AS ist es umgekehrt. Historische Auswertungen daher **mit** archiviert
 
 ### `BelegTypen` – Join-Falle
 
-Die Klarnamen stehen in `BelegTypen` (28 Zeilen). **`BelegTypenID` ist nicht `BelegTyp`:**
+Die Klarnamen stehen in `BelegTypen` (28 Zeilen, schemastabil – kann sich bei
+Schema-Änderung verschieben). **`BelegTypenID` ist nicht `BelegTyp`:**
 ab ID 7 laufen die Nummern auseinander, weil Wertgutschriften nachträglich einsortiert
 wurden (ID 7 → Typ 8, ID 13 → Typ 14, ID 14 → Typ 7). Ein Join über die ID liefert
 falsche Bezeichnungen.
@@ -120,7 +123,8 @@ Einkauf:  EA ─> EB ─> ER                          EA ─> EV ─> EB
           ER ─> EG (21)
 ```
 
-`IstAlsQuelleZugelassen = 1` steht nur bei vier Übergängen (AN→AB, AV→AB, AN→AL, AB→AL),
+`IstAlsQuelleZugelassen = 1` steht nur bei vier von rund 30 Übergängen (AN→AB, AV→AB,
+AN→AL, AB→AL),
 obwohl die übrigen fachlich stattfinden – das Flag meint vermutlich eine engere
 Berechtigung wie die Automatikübernahme, nicht „diese Kette existiert" *(unverifiziert)*.
 
@@ -164,17 +168,19 @@ Von 255 Spalten sind die meisten Summen-, Rabatt-, Steuer- und FIBU-Felder. Fach
 ### `Sachbearbeiter` ist ein Freitextfeld
 
 Fast jede gewachsene Auswertung filtert `Sachbearbeiter LIKE '%…%'`. Die realen Werte
-ab 2024 (50 verschiedene) machen das riskant:
+ab 2024 (um die 50 verschiedene) machen das riskant:
 
-* **71.552 Belege haben gar keinen Sachbearbeiter** – die mit Abstand größte Gruppe.
+* **gut 70.000 Belege haben gar keinen Sachbearbeiter** – die mit Abstand größte Gruppe.
   Jeder `LIKE`-Filter verliert sie stillschweigend.
-* `CVS` (50.013) ist kein Mensch, sondern ein technischer Benutzer.
-* Tippfehler und Dubletten sind real: `Andreas Scholz` (3.723) vs. `Andreas Sholz` (1),
-  `Jannick Machowetz` (1.240) vs. `Jannick Machowetz 1` (1). Dazu Platzhalter `Frei 1`,
-  `Frei 2`, `Kunde`, `Ü`, `Walsin Benchmark`.
-* `Texte` kennt unter `FieldName = 'Sachbearbeiter'` nur 14 Namen – real sind 50 im Umlauf.
+* `CVS` (rund 50.000) ist kein Mensch, sondern ein technischer Benutzer.
+* Tippfehler und Dubletten sind real: `Andreas Scholz` (der mit Abstand häufigste Name)
+  vs. `Andreas Sholz`, `Jannick Machowetz` vs. `Jannick Machowetz 1`. Dazu Platzhalter
+  `Frei 1`, `Frei 2`, `Kunde`, `Ü`, `Walsin Benchmark`.
+* `Texte` kennt unter `FieldName = 'Sachbearbeiter'` nur 14 Namen – real sind um die 50
+  im Umlauf.
 
-Die saubere Alternative ist `Belege.AnlageBenutzerID` → `Benutzer` (95 Zeilen:
+Die saubere Alternative ist `Belege.AnlageBenutzerID` → `Benutzer` (95 Zeilen,
+schemastabil, kann sich bei Account-Pflege verschieben:
 `BenutzerID`, `LoginName`, `Name`, `EMailAdresse`). Das ist allerdings der **Anleger**,
 nicht zwingend der zuständige Sachbearbeiter – die beiden Felder sind nicht verknüpft
 *(unverifiziert)*.
@@ -202,7 +208,7 @@ auf `Belege` – diese Felder existieren nur in der ETL-Staging-DB. Kundenname u
 | `ZusatzText1..3` | nvarchar(max) | die eigentlichen Langtexte, **RTF-Kandidaten**; Bedeutung je Belegtyp (bei AN: Lieferzeit / Ergebnis / Kommentar) |
 | `LieferDatum` | datetime | Liefertermin |
 | `AnlieferungsDatumWunsch`, `AnlieferungsDatumBestaetigt` (+ `…KW`) | datetime | Wunsch- / bestätigter Termin |
-| `K_bestaetigtesLieferdatum`, `K_Lief_KW` | | kundenspezifische Terminfelder – **faktisch ungenutzt** (1 gefüllte Zeile) |
+| `K_bestaetigtesLieferdatum`, `K_Lief_KW` | | kundenspezifische Terminfelder – **faktisch ungenutzt** (nur vereinzelte gefüllte Zeilen) |
 | `MontageDatum` | datetime | |
 | `SrcBelegeID`, `SrcBelegePositionenID`, `SrcVKBelegeID`, `OrgBelegePositionenID` | int | Herkunft in der Belegkette |
 
@@ -212,7 +218,7 @@ auf `Belege` – diese Felder existieren nur in der ETL-Staging-DB. Kundenname u
 |---|---|---|
 | 0 | Artikelposition | alle Belegtypen; ~99,97 % davon mit `ArtikelID` |
 | 2 | Text-/Kommentarzeile | AA, AN, AB, EA, EB, AV, AS, ES – nie mit `ArtikelID`. Bei AL, AR, ER, AG gar nicht vorhanden |
-| 8 | RMA-spezifisch | nur BelegTyp 16/17, 50 Zeilen gesamt |
+| 8 | RMA-spezifisch | nur BelegTyp 16/17, einige Dutzend Zeilen gesamt |
 | 10 | unbekannt | eine einzige Zeile (BelegTyp 19) |
 
 Für Mengen- und Wertsummen also `PositionsTyp = 0` filtern, sonst laufen Textzeilen mit.
@@ -223,12 +229,13 @@ Formal gibt es drei Einheitenebenen mit je eigener Menge, Faktor und Divisor
 (`VEAnzahl`/`VEText`, `BEAnzahl`/`BEFaktor`/`BEDivisor`/`BEsProVE`/`BEText`,
 `PEAnzahl`/`PEFaktor`/`PEDivisor`/`PEsProBE`/`PEText`).
 
-**In der Praxis ist das unkritisch:** `BEsProVE = 1` bei 10.735.872 von 10.735.882
-Positionen (10 Ausreißer mit 100 bzw. 1000). `VEText` und `BEText` sind fast immer
+**In der Praxis ist das unkritisch:** `BEsProVE = 1` bei praktisch allen Positionen
+(nur eine Handvoll Ausreißer mit 100 bzw. 1000). `VEText` und `BEText` sind fast immer
 `Stück`. **`VEAnzahl` ist also die Stückzahl** und direkt mit `Artikel.K_VPE` vergleichbar.
 
-Die Preiseinheit weicht dagegen systematisch ab: `PEText` ist bei 10,50 Mio Positionen
-`/1000` und bei 238.838 `/100`. Die Branche kalkuliert je 1000 Stück.
+Die Preiseinheit weicht dagegen systematisch ab: `PEText` ist bei der überwiegenden
+Mehrheit der Positionen `/1000` und nur bei einer kleinen Minderheit `/100`. Die Branche
+kalkuliert je 1000 Stück.
 
 | Spalte | Bezug |
 |---|---|
@@ -244,21 +251,21 @@ muss wissen, welche der beiden Einheiten dort gemeint ist.
 Die vier Terminfelder sind **nicht parallel gepflegt, sondern belegtyp-spezifisch**
 (Positionen ab 2024):
 
-| Typ | Positionen | `LieferDatum` | `AnlieferungsDatumWunsch` | `AnlieferungsDatumBestaetigt` |
+| Typ | Positionen (~) | `LieferDatum` | `AnlieferungsDatumWunsch` | `AnlieferungsDatumBestaetigt` |
 |---|---|---|---|---|
-| 1 AA | 17.912 | 97 % | – | – |
-| 2 AN | 63.388 | 28 % | – | – |
-| 3 AB | 161.526 | 99,9 % | **79 %** | – |
-| 4 AL | 67.545 | 99,9 % | 95 % | – |
-| 5 AR | 71.960 | 99,9 % | 95 % | – |
-| 8 EA | 25.879 | 43 % | – | – |
-| 9 EB | 38.795 | 99,8 % | – | **88 %** |
-| 10 ER | 36.213 | 100 % | – | **97 %** |
-| 14 AV | 2.895.428 | 99,97 % | – | – |
+| 1 AA | 18k | 97 % | – | – |
+| 2 AN | 63k | 28 % | – | – |
+| 3 AB | 162k | 99,9 % | **79 %** | – |
+| 4 AL | 68k | 99,9 % | 95 % | – |
+| 5 AR | 72k | 99,9 % | 95 % | – |
+| 8 EA | 26k | 43 % | – | – |
+| 9 EB | 39k | 99,8 % | – | **88 %** |
+| 10 ER | 36k | 100 % | – | **97 %** |
+| 14 AV | 2,9 Mio | 99,97 % | – | – |
 
 **Faustregel: `AnlieferungsDatumWunsch` ist die Verkaufsseite, `AnlieferungsDatumBestaetigt`
-die Einkaufsseite.** Ein Wunschtermin auf einer Bestellung existiert praktisch nicht
-(1 Zeile), ein bestätigter Termin auf einem Auftrag ebenso wenig (11 Zeilen). `LieferDatum`
+die Einkaufsseite.** Ein Wunschtermin auf einer Bestellung existiert praktisch nicht,
+ein bestätigter Termin auf einem Auftrag ebenso wenig. `LieferDatum`
 ist das einzige durchgängig gefüllte Feld – außer bei Angeboten (28 %) und
 Lieferantenanfragen (43 %), wo naturgemäß noch kein Termin feststeht.
 
@@ -267,12 +274,13 @@ Lieferantenanfragen (43 %), wo naturgemäß noch kein Termin feststeht.
 > `LieferDatum` und `AnlieferungsDatumBestaetigt`, bei AB über `LieferDatum` und
 > `AnlieferungsDatumWunsch`.
 
-Der `31.12.`-Platzhalter im Wunschtermin betrifft 1.750 AB-Positionen (1 %).
+Der `31.12.`-Platzhalter im Wunschtermin betrifft rund 2.000 AB-Positionen (1 %).
 
 ### Übernahme-Mechanik (offene Mengen)
 
 `VEAnzahl` = `SchonUebernommen` + `NochZuUebernehmen`. Die Identität hält über alle
-Belegtypen hinweg (Abweichung bei 9 von 3,39 Mio Positionen ab 2024). Die AlphaPlan-Oberfläche
+Belegtypen hinweg (nur vereinzelte Abweichungen unter Positionen ab 2024). Die
+AlphaPlan-Oberfläche
 zeigt nur `VEAnzahl` (Gesamtmenge) und `NochZuUebernehmen` (offen); `SchonUebernommen` ist
 das intern geführte Gegenstück. Ergänzend: `MindestensUebernehmen`, `JetztUebernehmen`,
 `JetztUebernehmenMin/Max`, `JetztUebernehmenInBEs`, `IgnoriereSchonUebernommen`.
@@ -281,21 +289,21 @@ das intern geführte Gegenstück. Ergänzend: `MindestensUebernehmen`, `JetztUeb
 Bei Endbelegen wird nie übernommen, dort bleibt der Wert dauerhaft auf der Gesamtmenge
 stehen (Positionen ab 2024):
 
-| Typ | Positionen | komplett offen | komplett erledigt | Interpretation |
+| Typ | Positionen (~) | komplett offen | komplett erledigt | Interpretation |
 |---|---|---|---|---|
-| 3 AB | 161.523 | 30 % | **70 %** | aussagekräftig |
-| 9 EB | 38.795 | 16 % | **84 %** | aussagekräftig |
-| 1 AA | 17.912 | 31 % | 70 % | aussagekräftig |
-| 2 AN | 63.384 | 97 % | 3 % | nur bei Auftragserteilung übernommen |
-| 14 AV | 2.895.428 | **98 %** | 2 % | dominiert jede ungefilterte Auswertung |
-| 4 AL | 67.544 | 99 % | 1 % | Endbeleg – Wert ohne Aussage |
-| 5 AR | 71.960 | 99,9 % | 0,03 % | Endbeleg – Wert ohne Aussage |
-| 8 EA | 25.879 | 100 % | 0,7 % | Endbeleg – Wert ohne Aussage |
-| 10 ER | 36.213 | 99,99 % | 0,01 % | Endbeleg – Wert ohne Aussage |
+| 3 AB | 162k | 30 % | **70 %** | aussagekräftig |
+| 9 EB | 39k | 16 % | **84 %** | aussagekräftig |
+| 1 AA | 18k | 31 % | 70 % | aussagekräftig |
+| 2 AN | 63k | 97 % | 3 % | nur bei Auftragserteilung übernommen |
+| 14 AV | 2,9 Mio | **98 %** | 2 % | dominiert jede ungefilterte Auswertung |
+| 4 AL | 68k | 99 % | 1 % | Endbeleg – Wert ohne Aussage |
+| 5 AR | 72k | 99,9 % | 0,03 % | Endbeleg – Wert ohne Aussage |
+| 8 EA | 26k | 100 % | 0,7 % | Endbeleg – Wert ohne Aussage |
+| 10 ER | 36k | 99,99 % | 0,01 % | Endbeleg – Wert ohne Aussage |
 
 ### Preise, Währung und die `X`-Spalten
 
-**Die `X`-Spalten sind keine Währungsumrechnung.** Geprüft über 10,5 Mio Positionen:
+**Die `X`-Spalten sind keine Währungsumrechnung.** Geprüft über Millionen von Positionen:
 `NettoPreisEinzelX / NettoPreisEinzel` ist für EUR, USD und JPY exakt 1,0 – die
 X-Variante ist in der Praxis wertgleich mit dem Original (vermutlich ein
 Rundungs-/Ausgabewert). Wer über `…X` in EUR zu rechnen glaubt, rechnet in Belegwährung.

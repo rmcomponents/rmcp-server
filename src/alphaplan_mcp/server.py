@@ -10,6 +10,7 @@ from redis.asyncio import Redis
 from .alphaplan_resources import register_alphaplan_resources
 from .apis.mouser.cache import RedisMouserCache
 from .config import settings
+from .middleware import StartupTimeMiddleware
 from .result_store import ResultSetStore
 from .tools import (
     customers,
@@ -62,6 +63,11 @@ async def lifespan(app):
     logger.info("Redis connection closed")
 
 mcp = FastMCP("AlphaPlanMCP", lifespan=lifespan)
+
+# Stamp every tool-call result's `_meta` with the server startup epoch so
+# clients can detect a mid-session restart and re-load the tool set / reset
+# the connection (see `SERVER_RESTART_EPOCH_KEY`).
+mcp.add_middleware(StartupTimeMiddleware())
 
 if settings.DEBUG:
     logging.basicConfig(level=logging.DEBUG)

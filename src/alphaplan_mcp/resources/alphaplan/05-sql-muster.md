@@ -141,7 +141,7 @@ WHERE B.BelegeID = ?;
 
 ## Performance & Indexe
 
-Die Indexlage entscheidet bei 10,8 Mio Positionen über Sekunden oder Minuten.
+Die Indexlage entscheidet bei über 10 Mio Positionen über Sekunden oder Minuten.
 
 **`Belege` ist geclustert auf `(BelegTyp, Datum, BelegeID)`** – nicht auf dem
 Primärschlüssel, der nur nonclustered vorliegt. Ein Filter `BelegTyp = x AND Datum >= y`
@@ -151,7 +151,7 @@ ist damit die günstigste überhaupt mögliche Zugriffsform und sollte in jeder 
 der Join von `Belege` auf `BelegePositionen` über `BelegeID` ist also optimal.
 
 > **`BelegePositionen.ArtikelNummer` hat keinen Index.** Eine Suche per MPN-String auf den
-> Positionen ist ein Full Scan über 10,8 Mio Zeilen. `Artikel.ArtikelNummer` ist dagegen
+> Positionen ist ein Full Scan über 10 Mio Zeilen. `Artikel.ArtikelNummer` ist dagegen
 > eindeutig indiziert. **Immer erst die `ArtikelID` auflösen und dann über `BP.ArtikelID`
 > filtern** – dafür existiert ein passender Index.
 

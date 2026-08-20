@@ -9,13 +9,13 @@
 
 ### EDI – wie Bestellungen hereinkommen
 
-| Tabelle | Zeilen | Inhalt |
+| Tabelle | Zeilen (~) | Inhalt |
 |---|---|---|
-| `EDI_Belege` | 418.408 | Staging der eingehenden Nachricht, 99 Spalten |
-| `EDI_BelegePositionen` | 9,7 Mio | deren Positionen |
-| `EDI_QuellDaten` | 22,4 Mio | Rohnachricht als Text (`QuellDaten` nvarchar(max)) je `EDI_BelegeID` |
+| `EDI_Belege` | ~420.000 | Staging der eingehenden Nachricht, 99 Spalten |
+| `EDI_BelegePositionen` | ~10 Mio | deren Positionen |
+| `EDI_QuellDaten` | ~22 Mio | Rohnachricht als Text (`QuellDaten` nvarchar(max)) je `EDI_BelegeID` |
 | `EDI_BelegeAdressen` | 3 | Adressen je Nachricht (`AdressTyp`) |
-| `EDI_Sendungen` | 103.436 | ausgehende Nachrichten |
+| `EDI_Sendungen` | ~100.000 | ausgehende Nachrichten |
 | `EDI_Einstellungen` | 3 | Provider, Import-/Exportpfade |
 
 `EDI_Belege` hält die Nachricht vollständig denormalisiert: Auftrags-, Liefer-, Rechnungs-
@@ -28,7 +28,7 @@ Statusfelder: `IstVerarbeitet`, `IstFreigegeben`, `IstManuellVeraendert`, `Statu
 für jeden Auftrag feststellen, ob er per EDI oder Webshop kam und wie die Rohbestellung aussah.
 Umgekehrt trägt `Belege.EDI_BelegeID` den Rückverweis.
 
-### `AenderungsProtokolle` (31,9 Mio) – der Audit-Trail
+### `AenderungsProtokolle` (~32 Mio) – der Audit-Trail
 
 | Spalte | Inhalt |
 |---|---|
@@ -53,9 +53,9 @@ ORDER BY DateAndTime DESC;
 > Für Fragen wie „wer hat den Preis geändert" ist die Tabelle brauchbar, für Statistiken
 > darüber nicht.
 
-Verwandte Protokolle: `Lagerprotokoll` (14,9 Mio) mit `BestandAlt`/`BestandDiff`/`BestandNeu`,
+Verwandte Protokolle: `Lagerprotokoll` (~15 Mio) mit `BestandAlt`/`BestandDiff`/`BestandNeu`,
 `BuchungsTyp`, `BuchungsText`, `LagerEP`, `BewertungsEP` je Bewegung – **strukturiert und
-damit weit besser auswertbar als `AenderungsProtokolle`**. Dazu `ArtikelVorgaenge` (10,7 Mio,
+damit weit besser auswertbar als `AenderungsProtokolle`**. Dazu `ArtikelVorgaenge` (~11 Mio,
 reine Verknüpfungstabelle Artikel ↔ Beleg/Termin/Support) und `AdressenVorgaenge`.
 
 ---

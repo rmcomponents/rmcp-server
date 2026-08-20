@@ -7,7 +7,7 @@
 
 ## Stammdaten
 
-### `Artikel` (306.682 Zeilen, 211 Spalten)
+### `Artikel` (rund 300.000 Zeilen, 211 Spalten)
 
 | Spalte | Bedeutung |
 |---|---|
@@ -26,31 +26,32 @@
 | `K_ArtikelnummerAlt`, `K_ArtikelnummerNeu` | MPN-Umstellungen |
 | `K_BeschaffungsTyp` | z. B. `strategisch` |
 | `RoHS`, `RoHSTyp`, `REACH`, `ZollTarifNummer`, `HerkunftsLaenderID` | Compliance |
-| `WarenGruppenID` | → `WarenGruppen` (314) – **die faktische Hersteller- und Produktklassifikation**, siehe unten |
+| `WarenGruppenID` | → `WarenGruppen` (314, schemastabil) – **die faktische Hersteller- und Produktklassifikation**, siehe unten |
 | `NichtStornierbarKeineRueckgabe` | NCNR |
 | `IstArchiviert` | |
 
-**Bestandszahlen:** 306.682 Artikel, `ArtikelNummer` ist eindeutig (306.682 distinct).
-5.954 archiviert, 1.015 ohne `K_VPE`, 132 ohne Hauptlieferant, 20 MPNs mit
-führendem/abschließendem Leerzeichen. 6.207 Auslaufartikel, aber nur **ein einziger**
-mit gepflegtem `DatumProduktabkuendigung` – die EOL-Datumsfelder sind faktisch leer,
-`IstAuslaufArtikel` ist der einzige brauchbare EOL-Indikator.
+**Bestandszahlen:** rund 300.000 Artikel, `ArtikelNummer` ist eindeutig (so viele distinct
+wie Artikel). Ein paar tausend archiviert, ~1.000 ohne `K_VPE`, ~130 ohne Hauptlieferant,
+20 MPNs mit führendem/abschließendem Leerzeichen. Einige tausend Auslaufartikel, aber nur
+**ein einziger** mit gepflegtem `DatumProduktabkuendigung` – die EOL-Datumsfelder sind
+faktisch leer, `IstAuslaufArtikel` ist der einzige brauchbare EOL-Indikator.
 
 > **`list_parts` filtert per Default `ArtikelNummer NOT LIKE 'TCC%'` und entfernt damit
-> 282.372 von 306.682 Artikeln – 92 % des Stamms.** `TCC`-Artikel sind neu angelegte
+> rund 92 % des Stamms.** `TCC`-Artikel sind neu angelegte
 > Teile, die noch nicht vertrieben werden; der Default ist für Vertriebs- und
 > Beschaffungsfragen also richtig. Für Fragen zum Katalogumfang, zu Neuanlagen oder zur
 > Stammdatenqualität muss man `negative_filter_term=None` setzen – sonst betrachtet man
-> 8 % des Bestands und hält sie für das Ganze.
+> ~8 % des Bestands und hält sie für das Ganze.
 
 > **Die `TCC`-Zahlen oben sind Vorfilter-Zahlen.** `list_parts` wendet zusätzlich zum
-> `TCC%`-Ausschluss immer auch `IstArchiviert = 0` an: Archivierte Artikel (5.954 von
-> 306.682) sind per Default **nicht** im Ergebnis. Die tatsächliche Ausgabe des Tools
-> liegt daher unter der oben genannten Zahl. Beide Schnitte sind unabhängig – auch mit
-> `negative_filter_term=None` bleiben Archivierte draußen, bis man
-> `include_archived=true` setzt.
+> `TCC%`-Ausschluss immer auch `IstArchiviert = 0` an: Archivierte Artikel (ein paar
+> tausend von rund 300.000, also knapp 2 %) sind per Default **nicht** im Ergebnis.
+> Die tatsächliche Ausgabe des Tools liegt daher unter der oben genannten Zahl.
+> Beide Schnitte sind unabhängig – auch mit `negative_filter_term=None` bleiben
+> Archivierte draußen, bis man `include_archived=true` setzt.
 
-**`WarenGruppen` (314 Zeilen)** ist trotz `WarenGruppenParentID` und `Ebene` flach
+**`WarenGruppen` (314 Zeilen, schemastabil – kann sich bei Klassifikationspflege
+verschieben)** ist trotz `WarenGruppenParentID` und `Ebene` flach
 (alle auf Ebene 1). Struktur:
 
 * `KostenTraeger` trägt den **Hersteller** – Taiyo Yuden, HolyStone, TaiTech, Mercury,
@@ -65,32 +66,33 @@ Verpackung), `RMC_GiveAways`, `RMC_Partner` (Dienstleistungen), `Muster_Rohmater
 `WarenGruppen.KostenTraeger`** – ein Herstellerfeld am Artikel gibt es nur als
 `HerstellerAdressenID`/`HerstellerNummer`, deren Pflegegrad ungeprüft ist.
 
-`EinheitenSets` (15) hängen ebenfalls an der Warengruppe und am Artikel: `VPE 250`,
+`EinheitenSets` (15, schemastabil) hängen ebenfalls an der Warengruppe und am Artikel: `VPE 250`,
 `VPE 500`, … `VPE 15000`, `Standard ohne VPE`, `Fracht`. Die zugehörigen `Einheiten`
 tragen `Teilbarkeit` = Losgröße und `Preiseinheit`; das ist die zweite, ältere
 Repräsentation der Verpackungseinheit neben `Artikel.K_VPE`.
 
-**`Feld02` (Lieferfähigkeits-Status)** ist ein Freitextfeld, kein Enum. Reale Verteilung:
+**`Feld02` (Lieferfähigkeits-Status)** ist ein Freitextfeld, kein Enum. Reale Verteilung
+(Größenordnungen):
 
-| Wert | Anzahl |
+| Wert | Anzahl (~) |
 |---|---|
-| `grün` (mit Umlaut!) | 295.428 |
-| `Active` | 4.229 |
-| leer | 4.195 |
-| `NRND` | 1.043 |
-| `rot` | 896 |
-| `läuft nicht` | 826 |
-| `0` | 43 |
-| `gelb` | 7 |
-| Sonstiges | 14 |
+| `grün` (mit Umlaut!) | 295k |
+| `Active` | 4k |
+| leer | 4k |
+| `NRND` | 1k |
+| `rot` | 0,9k |
+| `läuft nicht` | 0,8k |
+| `0` | ~40 |
+| `gelb` | ~7 |
+| Sonstiges | ~14 |
 
 Die Tool-Dokumentation von `list_parts` nennt `rot`/`gelb`/`gruen` – real steht dort
 **`grün` mit Umlaut**, ein Filter auf `gruen` trifft nichts. `gelb` existiert praktisch
-nicht (7 Artikel); die englischen Werte `Active`/`NRND` bilden eine zweite, parallele
+nicht; die englischen Werte `Active`/`NRND` bilden eine zweite, parallele
 Vokabelwelt. Unter Sonstiges stehen versehentlich eingetragene Preise
 (`0,168 USD`, `17,10 USD (Sonderpreis)`) und ein Tippfehler `NDNR`.
 
-### `Adressen` (4.320 Zeilen, 248 Spalten)
+### `Adressen` (einige tausend Zeilen, 248 Spalten)
 
 Kunden **und** Lieferanten in einer Tabelle.
 
@@ -105,15 +107,16 @@ Kunden **und** Lieferanten in einer Tabelle.
 | `Kategorie` (1) + `Beruf` | Potential- und Umsatz-Level-Codes |
 | `K_Vertriebskanal` | EDI, Webshop, API, Kundenportale, Luminovo, SAP Arriba … |
 | `K_IstZielkunde`, `K_IstJPA`, `K_IstBonusVereinbarung` | Vertriebsflags |
-| `AnschriftenID` | → `Anschriften` (269 k) → `Laender` (272) |
+| `AnschriftenID` | → `Anschriften` (über 250.000) → `Laender` (272, schemastabil: kann sich bei Schema-Änderung verschieben) |
 | `WaehrungenID`, `SprachenID`, `ZahlungsBedingungenID`, `VersandArtenID` | Vorbelegungen |
 | `KreditLimit`, `ZahlungsMoral`, `Mahnbar` | Bonität |
 | `LieferzeitVorgabeEK`, `LieferDauer` | |
 | `IstArchiviert` | |
 
-> **`IstLieferant` ist kein verlässlicher Filter.** Nur 30 von 4.320 Adressen tragen das
-> Flag, aber 44 Adressen haben EK-Belege – 19 davon (43 %) sind nicht als Lieferant
-> markiert. Umgekehrt haben 10 der 30 markierten Lieferanten auch VK-Belege.
+> **`IstLieferant` ist kein verlässlicher Filter.** Nur eine Handvoll der Adressen trägt das
+> Flag, aber deutlich mehr Adressen haben EK-Belege – 43 % davon sind nicht als Lieferant
+> markiert (Stand der Analyse). Umgekehrt haben einzelne der markierten Lieferanten auch
+> VK-Belege.
 
 **Besser: `AdressGruppenID`.** Die 9 Gruppen sind die eigentliche Klassifikation:
 
@@ -135,58 +138,61 @@ Kunde/Lieferant-Trennung bleibt der `BelegTyp` des Belegs der sicherste Weg
 
 ### Anschriften – Snapshot-Modell
 
-`Anschriften` (269.077) enthält die reinen Adressdaten (`Name1..3`, `Strasse`, `HausNummer`,
+`Anschriften` (über 250.000 Zeilen) enthält die reinen Adressdaten (`Name1..3`, `Strasse`, `HausNummer`,
 `Postleitzahl`, `Ort`, `LaenderID`, `Telefon`, `Telefax`, `Email`, `Internet`,
-`LieferHinweis`). **269 k Anschriften bei nur 4.320 Adressen**: Belege bekommen offenbar
-eine eingefrorene Kopie der Anschrift, damit spätere Stammdatenänderungen alte Belege nicht
-verändern *(erschlossen aus dem Mengenverhältnis und `ReferenzZaehler`, unverifiziert)*.
+`LieferHinweis`). **Eine Viertelmillion Anschriften bei nur einigen tausend Adressen**:
+Belege bekommen offenbar eine eingefrorene Kopie der Anschrift, damit spätere
+Stammdatenänderungen alte Belege nicht verändern *(erschlossen aus dem Mengenverhältnis
+und `ReferenzZaehler`, unverifiziert)*.
 
 Die vier schmalen Zuordnungstabellen sind dagegen die am Stamm hinterlegte Auswahlliste:
 
-| Tabelle | Zeilen | Verknüpfung |
+| Tabelle | Zeilen (~) | Verknüpfung |
 |---|---|---|
-| `LieferAnschriften` | 981 | `AdressenID` → `AnschriftenID`, mit `IstStandard` |
-| `RechnungsAnschriften` | 326 | dito |
-| `AuftragsAnschriften` | 13 | dito |
+| `LieferAnschriften` | ~1.000 | `AdressenID` → `AnschriftenID`, mit `IstStandard` |
+| `RechnungsAnschriften` | ~330 | dito |
+| `AuftragsAnschriften` | ~13 | dito |
 | `LieferAdressen` / `RechnungsAdressen` | 7 / 3 | `AdressenID` → `AdressenID2`, also abweichender Empfänger als eigene Adresse |
 
-`Ansprechpartner` (20.047) hängt über `AdressenID` an der Adresse und über `AnschriftenID`
+`Ansprechpartner` (rund 20.000) hängt über `AdressenID` an der Adresse und über `AnschriftenID`
 an einer eigenen Anschrift; interessant sind `Abteilung`, `Position`, `SuchName`,
 `AusgeschiedenAm`, `IstZeichnungsBerechtigt` und die Einwilligungsflags
 (`AkzeptiertNewsletter`, `AkzeptiertWerbung` …).
 
-`Laender` (272) trägt neben `LaenderKuerzel` auch **`IstEU`**, `ISOCode` und
+`Laender` (272, schemastabil: kann sich bei Schema-Änderung verschieben) trägt neben
+`LaenderKuerzel` auch **`IstEU`**, `ISOCode` und
 `IstLieferschwelleErreicht` – für USt-Prüfungen brauchbarer als ein Vergleich auf `'D'`.
 
-### `Lager` (308.880 Zeilen) und `LagerOrte` (10)
+### `Lager` (rund 300.000 Zeilen) und `LagerOrte` (10, schemastabil)
 
-| ID | LagerOrtName | Zeilen | mit Bestand | zählt in Lagersummen |
+| ID | LagerOrtName | Zeilen (~) | mit Bestand (~) | zählt in Lagersummen |
 |---|---|---|---|---|
-| 2 | **RM-Lager** (`IstStandard = 1`) | 306.698 | 875 | ja |
-| 10 | RM-Webshoplager | 838 | 769 | **nein** |
-| 9 | RM-Strategisches Bestandslager | 515 | 95 | **nein** |
-| 4 | RM-Musterlager RMC | 465 | 128 | ja |
-| 3 | RM-Sperrlager | 132 | 15 | **nein** |
-| 5–8 | RM-Musterlager AUTO SC RM 50/60/80/90 | je ~57 | je ~16 | ja |
+| 2 | **RM-Lager** (`IstStandard = 1`) | 307k | 0,9k | ja |
+| 10 | RM-Webshoplager | 0,8k | 0,8k | **nein** |
+| 9 | RM-Strategisches Bestandslager | 0,5k | ~100 | **nein** |
+| 4 | RM-Musterlager RMC | 0,5k | ~130 | ja |
+| 3 | RM-Sperrlager | ~130 | ~15 | **nein** |
+| 5–8 | RM-Musterlager AUTO SC RM 50/60/80/90 | je ~60 | je ~16 | ja |
 
 > **`SollFuerLagersummenBeruecksichtigtWerden = 0`** bei Sperr-, Webshop- und
 > strategischem Lager: deren Bestände fließen nicht in `LagerortSummeBestand` ein.
-> Webshopbestände sind mit 769 bestandsführenden Zeilen kein Randfall.
+> Webshopbestände sind mit einigen hundert bestandsführenden Zeilen kein Randfall.
 
 Das Hauptlager führt eine Zeile je Artikel; die Nebenlager nur für tatsächlich bevorratete
 Teile. **Ein Artikel kann also in mehreren Lagerorten liegen** – ein `TOP (1)` über
 `Artikel.AbbuchungsLagerOrteID` liefert nur das Abbuchungslager, nicht den Gesamtbestand.
 
-Chargenführung ist praktisch ungenutzt (2 Zeilen mit `Charge`), `EisernerBestand` ist
-durchgängig 0. `Verfuegbar` und `Verfuegbar2` weichen bei 1.337 Zeilen voneinander ab
-– der Unterschied ist nicht dokumentiert *(unverifiziert)*.
+Chargenführung ist praktisch ungenutzt (nur vereinzelte Zeilen mit `Charge`),
+`EisernerBestand` ist durchgängig 0. `Verfuegbar` und `Verfuegbar2` weichen bei einer
+kleinen Anzahl Zeilen voneinander ab – der Unterschied ist nicht dokumentiert
+*(unverifiziert)*.
 
 Mengenspalten: `Bestand`, `Verfuegbar`, `Verfuegbar2`, `Reserviert`, `Reserviervorschlag`,
 `Bestellt`, `Bestellvorschlag`, `Angeboten`, `QSBestand`, `RMABestand`, `BestandBeimKunden`,
 `MindestBestand`, `SollBestand`, `EKLieferavisBestand`, `LagerortSummeBestand`,
 `LagerortSummeBestandOhneEB`.
 
-### `Waehrungen` (4 Zeilen)
+### `Waehrungen` (4 Zeilen, schemastabil)
 
 | ID | Kürzel | Text | KursFaktor | KursDivisor | Standardwaehrung |
 |---|---|---|---|---|---|
@@ -206,16 +212,18 @@ Betrag_EUR = Betrag_Belegwährung * KursFaktor / KursDivisor
 `KursDivisor <> 1`, **nicht** über `KursFaktor <> 1` (das liefert keine Treffer).
 `BoersenKursFaktor`/`-Divisor`/`-Datum` halten den tagesaktuellen Kurs am Stamm,
 `Belege.KursFaktor`/`-Divisor` den zum Belegdatum eingefrorenen. Reale Belegkurse
-streuen entsprechend (JPY-Divisor zwischen ca. 155 und 187).
+streuen entsprechend (JPY-Divisor zwischen ca. 155 und 187). Auch die Divisor-Werte
+oben sind Momentaufnahmen und verschieben sich mit den Wechselkursen.
 
-Verteilung der Positionen ab 2024: EUR 4,17 Mio, JPY 3,98 Mio, USD 2,39 Mio – **Fremdwährung ist der Normalfall, nicht die Ausnahme.** 129 Positionen hängen an
-Belegen mit `WaehrungenID = 0` (Dummy-Zeile, kein Kürzel).
+Verteilung der Positionen ab 2024: EUR und JPY je grob 4 Mio, USD grob 2,4 Mio –
+**Fremdwährung ist der Normalfall, nicht die Ausnahme.** Nur eine kleine Anzahl
+Positionen hängt an Belegen mit `WaehrungenID = 0` (Dummy-Zeile, kein Kürzel).
 
 ---
 
 ---
 
-## `Texte` – der Lookup-Mechanismus (758 Zeilen)
+## `Texte` – der Lookup-Mechanismus (rund 760 Zeilen, schemastabil: wächst mit der Klassifikationspflege)
 
 Zentrale Werteliste für Enum-Felder **und** Textbaustein-Bibliothek. Spalten:
 `TableName`, `FieldName`, `TextText`, `LangText`, `Beschreibung`, `ShortCut`,
@@ -242,7 +250,7 @@ zusätzlich den Vorlagennamen:
 ```sql
 SELECT LangText
 FROM ALPHAPLAN_EchtDaten.dbo.Texte WITH (NOLOCK)
-WHERE FieldName = 'ZusatzText2' AND TextText = 'AN_Ergebnis Quote';   -- 13 Zeilen
+WHERE FieldName = 'ZusatzText2' AND TextText = 'AN_Ergebnis Quote';   -- rund ein Dutzend Zeilen
 ```
 
 Vorlagennamen folgen der Konvention `<Belegkürzel>_<Sprache> - <Zweck>`
@@ -256,15 +264,16 @@ Belegte `FieldName`-Werte u. a.: `K_Quotierungsphase`, `K_ChanceOfSucces`, `K_Ge
 
 > **`Texte` ist nicht autoritativ für die tatsächlich gespeicherten Werte.** Bei
 > `K_GeschaeftsArt` enthält `Texte` die Werte Bestand / neu / Projekt / Spotorder – in
-> den Positionen stehen aber Neugeschäft (66.347), Bestandsgeschäft (21.602) und
-> Projektgeschäft (2.272), die in `Texte` komplett fehlen; von der gepflegten Liste
-> kommt nur Spotorder real vor, und zwar 4-mal. Die Liste wurde offenbar umbenannt,
+> den Positionen stehen aber Neugeschäft (größte Gruppe, Zehntausende), Bestandsgeschäft
+> (ebenfalls Zehntausende, deutlich kleiner) und Projektgeschäft (nur einige tausend),
+> die in `Texte` komplett fehlen; von der gepflegten Liste kommt nur Spotorder real vor,
+> und zwar nur ein paar Mal. Die Liste wurde offenbar umbenannt,
 > ohne die Bestandsdaten zu migrieren. **Für echte Wertelisten immer
 > `SELECT DISTINCT <spalte>` auf den Nutzdaten fahren, `Texte` nur ergänzend.**
 >
 > Auch innerhalb gepflegter Felder gibt es Ausreißer: `K_Quotierungsphase` enthält neben
-> den fünf definierten Phasen die Rohwerte 2 (53×) und 1 (30×) sowie eine
-> versehentlich eingetragene MPN (8×).
+> den fünf definierten Phasen vereinzelte Rohwerte (2, 1) sowie eine
+> versehentlich eingetragene MPN.
 
 > Datenqualität: Dubletten und Tippfehler sind real vorhanden – `Sachbearbeiter` mit
 > Leerzeichen am Ende, `Artikelbezeichnung` vs. `ArtikelBezeichnung`, in

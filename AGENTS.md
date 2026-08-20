@@ -87,6 +87,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │       ├── query_engine.py       # QueryEngine: Polars filter/sort/agg over stored sets
 │       ├── models.py             # Pydantic models (FilterGroup, SortSpec, AggregationSpec, …)
 │       ├── errors.py             # ToolError codes + safe error wrapping
+│       ├── middleware.py         # StartupTimeMiddleware: stamps `_meta.server_restart_epoch` on tool results
 │       ├── utils.py              # single normalize_mpn() (Mouser + join)
 │       ├── tools/
 │       │   ├── __init__.py
@@ -104,7 +105,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 11 test modules, 338 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 16 test modules, 348 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -206,7 +207,7 @@ never a tool failure.
 | Module | Responsibility | Key symbols |
 |---|---|---|
 | `__main__.py` | Entry shim | `main()` from `.server` |
-| `server.py` | FastMCP app; lifespan; tool registration; `/health`; DEBUG `LoggingMiddleware` | `mcp`, `lifespan`, `cleanup_loop`, `health_check`, `main()` |
+| `server.py` | FastMCP app; lifespan; tool registration; `/health`; DEBUG `LoggingMiddleware`; unconditionally adds `StartupTimeMiddleware` | `mcp`, `lifespan`, `cleanup_loop`, `health_check`, `main()` |
 | `alphaplan_resources.py` | Registers the 7 AlphaPlan schema docs as MCP resources (data-driven) | `ALPHAPLAN_RESOURCES`, `RESOURCE_DIR`, `register_alphaplan_resources` |
 | `config.py` | Single source of config truth | `Settings`, `settings` |
 | `database.py` | SQL Server via pyodbc; column-description dictionaries; async stream generators | `build_connection`, `fetch_customers_stream`, `fetch_parts_stream`, `fetch_part_stats_stream`, `fetch_line_items_stream`, `fetch_webshop_prices_stream`, `_*_COLUMN_DESCRIPTIONS` |
@@ -215,6 +216,7 @@ never a tool failure.
 | `query_engine.py` | Polars engine over stored sets: filters, sort, projection, pagination, CSV/gzip encodings, `store_result`, `join` | `QueryEngine`, `_build_filter_expr`, `_apply_sort`, `_build_agg_exprs`, `_validate_aliases`, `_df_to_rows`, `_format_paginated_result`, `join` |
 | `models.py` | Shared Pydantic arg/result types | `FilterClause`, `FilterGroup`, `SortSpec`, `AggregationSpec`, `ColumnInfo`, `ResultProvenance` (+`parents`), `ResultSetMetadata`, `ResultSetSummary`, `ColumnOrigin`, `JoinColumnPair`, `NormalizeOptions`, `JoinReport`, `JoinResultSummary` |
 | `errors.py` | Stable, machine-readable error surface; never leaks internals | `ToolError` (+`to_dict`), `tool_error`, `wrap_redis_error`, `wrap_db_error` |
+| `middleware.py` | Stamps every tool-call result's `_meta` with the startup epoch; changing `server_restart_epoch` ⇒ server restarted ⇒ clients re-load tool set / reset connection | `StartupTimeMiddleware`, `SERVER_RESTART_EPOCH_KEY` |
 | `utils.py` | Single shared normalizer (used by Mouser and `join`) | `normalize_mpn` |
 | `tools/customers.py` | Customer ingestion tool | `list_customers` |
 | `tools/parts.py` | Parts / part-stats tools | `list_parts`, `list_part_stats` |
@@ -382,7 +384,7 @@ Notes:
 - Unit tests mock Redis with fakeredis — no live Redis needed. `tests/integration/` is empty.
 - `tests/unit` modules: `test_query_engine`, `test_result_store`, `test_serialization`,
   `test_mouser_api`, `test_mouser_cache`, `test_search_mouser_parts`, `test_part_stats`,
-  `test_list_line_items`, `test_webshop_prices`, `test_join`, `test_document_access`.
+  `test_list_line_items`, `test_webshop_prices`, `test_join`, `test_document_access`, `test_middleware`.
 
 ### Running locally (dev)
 
