@@ -18,7 +18,8 @@ DOCUMENT_TYPE_BELEG_TYP = {
     "AB": 3,    # Auftrag / Order (Auftragsbelege)
     "AL": 4,    # Lieferscheine Ausgang (delivery notes out)
     "AR": 5,    # Rechnung Ausgang (invoices out)
-    "AA": 8,    # Lieferantenanfragen (requests to suppliers)
+    "AA": 1,    # Verkaufsanfragen (sales inquiries)
+    "EA": 8,    # Lieferantenanfragen (requests to suppliers)
     "EB": 9,    # Bestellungen bei unseren Lieferanten (purchase orders) - purchasing prices
     "ER": 10,   # gebuchte Warenzugaenge / Rechnung Eingang (goods receipts / invoices in)
 }
@@ -28,7 +29,8 @@ _DOCUMENT_TYPE_HINTS = {
     "AB": "Order/Auftrag: confirmed customer orders (outgoing).",
     "AL": "Delivery note out (Lieferschein Ausgang).",
     "AR": "Invoice out (Rechnung Ausgang).",
-    "AA": "Request for quote to suppliers (Lieferantenanfrage).",
+    "AA": "Sales inquiry (Verkaufsanfrage).",
+    "EA": "Request for quote to suppliers (Lieferantenanfrage).",
     "EB": "Purchase order to suppliers (Bestellung). Use for purchasing prices.",
     "ER": "Goods receipt / invoice in (Warenzugang / Rechnung Eingang).",
 }
@@ -56,7 +58,8 @@ async def list_line_items(
       - `AB` (3) - Auftrag/Order: confirmed customer orders (outgoing).
       - `AL` (4) - Lieferschein Ausgang: outgoing delivery notes.
       - `AR` (5) - Rechnung Ausgang: outgoing invoices.
-      - `AA` (8) - Lieferantenanfrage: requests for quotes sent to suppliers.
+      - `AA` (1) - Verkaufsanfrage: sales inquiries (requests from customers for quotes).
+      - `EA` (8) - Lieferantenanfrage: requests for quotes sent to suppliers.
       - `EB` (9) - Bestellung: purchase orders placed with suppliers. **Use this one for
         purchasing prices.**
       - `ER` (10) - Warenzugang / Rechnung Eingang: posted goods receipts / incoming invoices.
@@ -74,7 +77,7 @@ async def list_line_items(
     date, or the original/requested delivery date. Each row is one line item and carries:
     - the counterparty (`KundeOderLieferant`) plus its number (`KundenNummer`) and its
       classification and industry sector
-      (customer for outgoing document types, supplier for `AA`/`EB`/`ER`),
+      (customer for outgoing document types, supplier for `EA`/`EB`/`ER`),
     - the net unit price converted to EUR (`NettoPreisStueckEUR`); the document's original
       currency and exchange-rate factor are kept in `BelegWaehrung` / `BelegKursFaktor`,
     - `Menge` - the quantity (VEAnzahl) and `MengeOffen` - the open/remaining quantity still to

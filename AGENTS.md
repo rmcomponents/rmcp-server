@@ -40,11 +40,11 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 |---|---|---|---|
 | 1 | **Console script** | `alphaplan-mcp` | Declared in `[project.scripts]` of both `pyproject.toml` files → `alphaplan_mcp.__main__:main` → `alphaplan_mcp.server:main()` |
 | 2 | **Module run** | `python -m alphaplan_mcp` | Same path as above; this is the Docker `CMD` |
-| 3 | **App assembly / wiring** | `src/alphaplan_mcp/server.py` | Builds the `FastMCP("AlphaPlanMCP")` instance, lifespan, Redis client, `ResultSetStore`, Mouser cache, cleanup loop, registers all 17 tools, adds the `/health` route and DEBUG middleware |
+| 3 | **App assembly / wiring** | `src/alphaplan_mcp/server.py` | Builds the `FastMCP("AlphaPlanMCP")` instance, lifespan, Redis client, `ResultSetStore`, Mouser cache, cleanup loop, registers all 17 tools + 3 document compat tools, adds the `/health` route and DEBUG middleware |
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
 | 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_customers` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
-| 7 | **Tests** | pytest, rootdir = repo root | 319 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
+| 7 | **Tests** | pytest, rootdir = repo root | 338 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
 | 8 | **Health check** | `GET /health` | Custom route in `server.py`; returns `{"status": "healthy", "redis": "ok"}` or 503 when Redis is unreachable |
 
 The canonical boot path is:
@@ -104,7 +104,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 10 test modules, 319 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 11 test modules, 338 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -221,6 +221,7 @@ never a tool failure.
 | `tools/documents.py` | Document line-item tool (configurable by document type) | `list_line_items`, `DOCUMENT_TYPE_BELEG_TYP`, `_price_summary` |
 | `tools/webshop.py` | Webshop price tool | `get_webshop_prices` |
 | `tools/mouser.py` | Mouser search tool | `search_mouser_parts` |
+| `tools/document_access.py` | Shared document backend for the AlphaPlan schema docs (list/load/search); delegated to by both the FastMCP resources and the compat tools in `server.py` | `list_document_metadata`, `load_document`, `search_document_content` |
 | `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `describe_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set`, `normalize_preview` |
 | `apis/mouser/api.py` | Mouser REST client | `search_by_part_number` |
 | `apis/mouser/cache.py` | Cache backend & selection point | `RedisMouserCache`, `NullMouserCache`, `default_cache`, `build_cache_key`, `CachedEntry`, `cache_metadata` |
@@ -237,9 +238,9 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | Tool | Source | Safety-relevant behavior |
 |---|---|---|
 | `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) | streams, stores, returns summary |
-| `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master. The `Status` column (`Feld02`) is the supplier's ability-to-supply indicator: mostly `rot` (cannot supply) / `gelb` (limited) / `gruen` (no problem), but other values appear due to data-quality issues |
+| `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master. **Default `include_archived=False` also silently excludes archived articles (`IstArchiviert = 1`); pass `include_archived=True` (or `False` explicitly) to control it. The two cuts are independent.** The `Status` column (`Feld02`) is the supplier's ability-to-supply indicator: mostly `rot` (cannot supply) / `gelb` (limited) / `gruen` (no problem), but other values appear due to data-quality issues |
 | `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join | `year` **mandatory**; `limit` returns rows inline instead of storing |
-| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` | One document type per call via `document_type` code → `BelegTyp`: `AN`=2 (Angebot), `AB`=3 (Auftrag), `AL`=4 (Lieferschein Ausgang), `AR`=5 (Rechnung Ausgang), `AA`=8 (Lieferantenanfrage), `EB`=9 (Bestellung — purchasing), `ER`=10 (Rechnung Eingang); a row is returned when **any** of the four date fields falls in the inclusive range `>=`/`<=` (`LieferDatum`, `LieferDatumBestaetigt`, `OriginalDatum`/`AnlieferungsDatumWunsch`, `BelegDatum`/`B.Datum`); `include_archived` defaults to `true` for `AB` (Auftrag) and `false` for all other types, controlling whether archived documents (`B.IstArchiviert = 1`) are included; joins the counterparty (`KundenNummer` + `KundeOderLieferant` + classification/branch) and delivery dates; extra columns `MengeOffen` (`NochZuUebernehmen` open quantity), `OriginalDatum` (`AnlieferungsDatumWunsch`) and `IstArchiviert` (1 = archived, 0 = not); uneven `document_type` → `INVALID_ARGUMENT` with `available_document_types`; returns summary **plus** `price_summary` (`min`/`max`/`average`/`median`/`count` of `NettoPreisStueckEUR`) and `archived_summary` (`archived`/`non_archived` row counts) |
+| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` | One document type per call via `document_type` code → `BelegTyp`: `AN`=2 (Angebot), `AB`=3 (Auftrag), `AL`=4 (Lieferschein Ausgang), `AR`=5 (Rechnung Ausgang), `AA`=1 (Verkaufsanfrage), `EA`=8 (Lieferantenanfrage), `EB`=9 (Bestellung — purchasing), `ER`=10 (Rechnung Eingang); a row is returned when **any** of the four date fields falls in the inclusive range `>=`/`<=` (`LieferDatum`, `LieferDatumBestaetigt`, `OriginalDatum`/`AnlieferungsDatumWunsch`, `BelegDatum`/`B.Datum`); `include_archived` defaults to `true` for `AB` (Auftrag) and `false` for all other types, controlling whether archived documents (`B.IstArchiviert = 1`) are included; joins the counterparty (`KundenNummer` + `KundeOderLieferant` + classification/branch) and delivery dates; extra columns `MengeOffen` (`NochZuUebernehmen` open quantity), `OriginalDatum` (`AnlieferungsDatumWunsch`) and `IstArchiviert` (1 = archived, 0 = not); uneven `document_type` → `INVALID_ARGUMENT` with `available_document_types`; returns summary **plus** `price_summary` (`min`/`max`/`average`/`median`/`count` of `NettoPreisStueckEUR`) and `archived_summary` (`archived`/`non_archived` row counts) |
 | `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; raises `ToolError` on bad input |
 | `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation |
 
@@ -297,6 +298,23 @@ All `mime_type = text/markdown`, `tags = {alphaplan, schema}`. Wenn eine Belegda
 `add_resource` geändert/umbenannt wird, muss die Konstante gepflegt werden –
 `tests/unit/test_resources.py` erzwingt Datei↔Registrierung↔URI-Konsistenz.
 
+## 6.2 Document compatibility tools (redundant with MCP resources)
+
+Registered in `server.py` via `mcp.tool()`; thin adapters over
+`tools/document_access.py`, which itself delegates to the *same* public
+FastMCP backend as the resource handlers (`server.list_resources` /
+`server.read_resource`). These exist only for MCP hosts (e.g. some Claude
+chat / custom connectors) that connect successfully but do not make ordinary
+text resources available to the model. The canonical representation remains
+`resources/list` / `resources/read` (§6.1); the tools deliberately duplicate
+the MCP interface but **not** the data/loading layer.
+
+| Tool | Purpose | Notable behavior |
+|---|---|---|
+| `list_documents()` | List useful documents with lightweight metadata (URI, name, description, MIME type) | Same source of truth as `resources/list`; no args |
+| `read_document(uri)` | Return text content for a resource URI | Delegates to `server.read_resource` (same path as `resources/read`); unknown/unavailable URI → ToolError `RESOURCE_NOT_FOUND` |
+| `search_documents(query)` | Discovery/search across document metadata + content | Convenience operation over the same resources, not a replacement resource interface; returns compact `[{uri, title, excerpt, relevance}]` |
+
 ---
 
 ## 7. Configuration Reference
@@ -353,7 +371,7 @@ which shows `../tests/unit/...`) is:
 
 ```bash
 cd src
-uv run pytest ../tests/unit          # all unit tests (319)
+uv run pytest ../tests/unit          # all unit tests (338)
 uv run pytest ../tests/unit/test_query_engine.py   # single module
 ```
 
@@ -364,7 +382,7 @@ Notes:
 - Unit tests mock Redis with fakeredis — no live Redis needed. `tests/integration/` is empty.
 - `tests/unit` modules: `test_query_engine`, `test_result_store`, `test_serialization`,
   `test_mouser_api`, `test_mouser_cache`, `test_search_mouser_parts`, `test_part_stats`,
-  `test_list_line_items`, `test_webshop_prices`, `test_join`.
+  `test_list_line_items`, `test_webshop_prices`, `test_join`, `test_document_access`.
 
 ### Running locally (dev)
 

@@ -11,7 +11,15 @@ from .alphaplan_resources import register_alphaplan_resources
 from .apis.mouser.cache import RedisMouserCache
 from .config import settings
 from .result_store import ResultSetStore
-from .tools import customers, documents, mouser as mouser_tool, parts, result_sets, webshop
+from .tools import (
+    customers,
+    document_access,
+    documents,
+    mouser as mouser_tool,
+    parts,
+    result_sets,
+    webshop,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +95,66 @@ mcp.tool()(result_sets.delete_result_set)
 mcp.tool()(result_sets.normalize_preview)
 
 register_alphaplan_resources(mcp)
+
+# ---------------------------------------------------------------------------
+# Document compatibility tools.
+#
+# These are deliberately redundant with the standard MCP resource API. The
+# canonical representation stays `resources/list` / `resources/read` (see
+# register_alphaplan_resources above). The tools below exist only for MCP
+# clients that connect successfully but do not make ordinary text resources
+# available to the model (e.g. some Claude chat / custom connectors). They are
+# thin adapters over the same shared backend as the resource handlers, so no
+# document-loading or storage logic is duplicated.
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+async def list_documents():
+    """List the AlphaPlan schema documents that are useful to an LLM.
+
+    Compatibility wrapper around this server's MCP resources. Equivalent
+    content is exposed through the standard MCP resource API (resources/list);
+    this tool exists for MCP clients that do not expose resources directly to
+    the model.
+
+    Returns lightweight metadata per document: URI, name/title, description
+    and MIME type. Use read_document(uri) to load a document's content.
+    """
+    return await document_access.list_document_metadata(mcp)
+
+
+@mcp.tool()
+async def read_document(uri: str):
+    """Read the text content of a document by its resource URI.
+
+    Compatibility wrapper around this server's MCP resources. Equivalent
+    content is exposed through the standard MCP resource API (resources/read);
+    this tool exists for MCP clients that do not expose resources directly to
+    the model.
+
+    The URI must identify a document reachable through the standard resource
+    implementation (e.g. one the list_documents tool returned). Unknown or
+    unavailable URIs raise RESOURCE_NOT_FOUND.
+    """
+    return await document_access.load_document(mcp, uri)
+
+
+@mcp.tool()
+async def search_documents(query: str):
+    """Search the available textual documents and return the most relevant.
+
+    This is a convenience/discovery operation over this server's MCP resources
+    rather than a replacement resource interface. Equivalent content is exposed
+    through the standard MCP resource API (resources/list / resources/read);
+    this tool exists for MCP clients that do not expose resources directly to
+    the model.
+
+    Scans document metadata and content for the query, returning compact
+    results (resource URI, title, relevant excerpt, relevance) so the model can
+    decide whether to call read_document(uri).
+    """
+    return await document_access.search_document_content(mcp, query)
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):

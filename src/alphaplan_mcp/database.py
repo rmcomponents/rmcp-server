@@ -478,6 +478,7 @@ async def fetch_parts_stream(
     negative_filter_term: Optional[str] = "TCC%",
     match_code: Optional[str] = None,
     sample_n: Optional[int] = None,
+    include_archived: Optional[bool] = False,
 ) -> AsyncGenerator[pa.RecordBatch, None]:
     """
     Asynchronously yield part rows as Arrow record batches.
@@ -485,6 +486,9 @@ async def fetch_parts_stream(
     Supports optional positive/negative filtering on ArtikelNummer and match code search.
     When `sample_n` is set, the sample is taken *after* all other filters are applied, returning
     up to `sample_n` random rows from the filtered population.
+
+    By default, archived articles (`A.IstArchiviert = 1`) are excluded. Pass
+    `include_archived=True` to include them as well.
     """
     import asyncio
     from asyncio import Queue
@@ -521,8 +525,9 @@ async def fetch_parts_stream(
             # population. Instead we filter first (inner subquery), then take up to sample_n random
             # rows from the filtered result via `ORDER BY NEWID()`.
             params = []
+            archived_predicate = "" if include_archived else "A.IstArchiviert = 0 AND "
             where = (
-                "WHERE A.IstArchiviert = 0 AND A.ArtikelID > 0"
+                f"WHERE {archived_predicate}A.ArtikelID > 0"
                 " AND WG.Bezeichnung IS NOT NULL AND LTRIM(RTRIM(WG.Bezeichnung)) <> ''"
             )
 

@@ -20,6 +20,7 @@ async def list_parts(
     negative_filter_term: Optional[str] = "TCC%",
     match_code: Optional[str] = None,
     sample_n: Optional[int] = None,
+    include_archived: Optional[bool] = False,
     ctx: Context = None,
 ) -> Union[ResultSetSummary, Dict[str, Any]]:
     """
@@ -33,6 +34,12 @@ async def list_parts(
     - `sample_n`: Optional. If provided, returns a random sample of up to `sample_n` rows, drawn
       **after** all other filters (positive/negative/match_code) are applied, so it is a sample of
       the filtered population. If omitted, all matching rows are returned.
+    - `include_archived`: Optional, defaults to `false`. When `false` (the default), archived
+      articles (`IstArchiviert = 1`) are excluded from the result set. Pass `true` to include
+      archived articles as well. This is independent of `negative_filter_term`: two separate
+      silently-truncating cuts apply by default (`IstArchiviert = 0` here and non-`TCC` via
+      `negative_filter_term`), so the returned row count is lower than the raw article-master
+      figure in `alphaplan://stammdaten`.
     
     Filters can be combined. The result set is stored in Redis and managed identically to `list_customers`.
 
@@ -42,13 +49,13 @@ async def list_parts(
       `gruen` (green - no supply problem). Other values occasionally appear because of data-quality
       issues, so do not assume the vocabulary is exhaustive.
 
-    Note on the default exclusion: with `negative_filter_term` left at its default `'TCC%'`, the catalog is silently truncated to non-`TCC` articles. This is a large, non-obvious cut. Pass `negative_filter_term=None` to fetch the full article master. When the default filter is applied, the returned summary includes a `warning` field stating so.
+    Note on the default exclusions: with `negative_filter_term` left at its default `'TCC%'`, the catalog is silently truncated to non-`TCC` articles. This is a large, non-obvious cut. Pass `negative_filter_term=None` to fetch the full article master. When the default filter is applied, the returned summary includes a `warning` field stating so. Independently, archived articles are excluded unless `include_archived=True` is passed.
     """
     store: ResultSetStore = ctx.fastmcp.result_store
 
     logger.info(
-        "list_parts called with positive_filter_term=%s, negative_filter_term=%s, match_code=%s, sample_n=%s",
-        positive_filter_term, negative_filter_term, match_code, sample_n
+        "list_parts called with positive_filter_term=%s, negative_filter_term=%s, match_code=%s, sample_n=%s, include_archived=%s",
+        positive_filter_term, negative_filter_term, match_code, sample_n, include_archived
     )
 
     try:
@@ -58,7 +65,8 @@ async def list_parts(
                 "positive_filter_term": positive_filter_term,
                 "negative_filter_term": negative_filter_term,
                 "match_code": match_code,
-                "sample_n": sample_n
+                "sample_n": sample_n,
+                "include_archived": include_archived
             }
         )
         summary = await store.store_result_stream(
@@ -68,7 +76,8 @@ async def list_parts(
                 positive_filter_term=positive_filter_term,
                 negative_filter_term=negative_filter_term,
                 match_code=match_code,
-                sample_n=sample_n
+                sample_n=sample_n,
+                include_archived=include_archived
             ),
         )
         # Rec 4: surface the silently-truncating default prominently instead of hiding it.

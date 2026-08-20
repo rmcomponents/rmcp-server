@@ -43,6 +43,13 @@ mit gepflegtem `DatumProduktabkuendigung` – die EOL-Datumsfelder sind faktisch
 > Stammdatenqualität muss man `negative_filter_term=None` setzen – sonst betrachtet man
 > 8 % des Bestands und hält sie für das Ganze.
 
+> **Die `TCC`-Zahlen oben sind Vorfilter-Zahlen.** `list_parts` wendet zusätzlich zum
+> `TCC%`-Ausschluss immer auch `IstArchiviert = 0` an: Archivierte Artikel (5.954 von
+> 306.682) sind per Default **nicht** im Ergebnis. Die tatsächliche Ausgabe des Tools
+> liegt daher unter der oben genannten Zahl. Beide Schnitte sind unabhängig – auch mit
+> `negative_filter_term=None` bleiben Archivierte draußen, bis man
+> `include_archived=true` setzt.
+
 **`WarenGruppen` (314 Zeilen)** ist trotz `WarenGruppenParentID` und `Ebene` flach
 (alle auf Ebene 1). Struktur:
 

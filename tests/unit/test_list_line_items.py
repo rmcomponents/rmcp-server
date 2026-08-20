@@ -109,6 +109,41 @@ async def test_list_line_items_resolves_eb_to_9():
     assert captured["beleg_typ"] == 9
 
 
+@pytest.mark.parametrize("doc_type,expected_beleg_typ", [
+    ("AA", 1),
+    ("EA", 8),
+])
+@pytest.mark.asyncio
+async def test_list_line_items_aa_ea_beleg_typ(doc_type, expected_beleg_typ):
+    async def mock_stream(*args, **kwargs):
+        captured["beleg_typ"] = kwargs.get("beleg_typ")
+        return
+        yield  # pragma: no cover
+
+    captured = {}
+    mock_ctx = MagicMock()
+    mock_ctx.session_id = "test_session"
+    mock_store = MagicMock(store_result_stream=None)
+
+    async def consume(session_id, provenance, batches, **kwargs):
+        async for _ in batches:
+            pass
+        return {"result_id": f"rs_{doc_type}"}
+    mock_store.store_result_stream = consume
+    mock_ctx.fastmcp.result_store = mock_store
+
+    with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
+        result = await list_line_items(
+            artikel_nummer="0402B102J500CT",
+            document_type=doc_type,
+            date_from="2025-01-01",
+            date_to="2025-12-31",
+            ctx=mock_ctx,
+        )
+    assert result["result_id"] == f"rs_{doc_type}"
+    assert captured["beleg_typ"] == expected_beleg_typ
+
+
 def _run(captured):
     async def mock_stream(*args, **kwargs):
         captured["include_archived"] = kwargs.get("include_archived")
@@ -137,6 +172,7 @@ def _run(captured):
     ("ER", False),
     ("AL", False),
     ("AA", False),
+    ("EA", False),
 ])
 @pytest.mark.asyncio
 async def test_list_line_items_include_archived_default(doc_type, expected):

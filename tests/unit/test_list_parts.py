@@ -66,3 +66,53 @@ async def test_list_parts_no_default_warning_when_explicit_none():
     assert isinstance(result, dict)
     assert result["result_id"] == "rs_2"
     assert "warning" not in result
+
+
+@pytest.mark.asyncio
+async def test_list_parts_include_archived_propagated():
+    mock_batch = pa.RecordBatch.from_pylist([{"ArtikelNummer": "A234"}])
+
+    def mock_factory(*args, **kwargs):
+        captured["include_archived"] = kwargs.get("include_archived")
+        async def gen():
+            yield mock_batch
+        return gen()
+
+    captured = {}
+    mock_ctx = MagicMock()
+    mock_ctx.session_id = "test_session"
+    mock_store = AsyncMock()
+    mock_store.store_result_stream.return_value = {"result_id": "rs_3"}
+    mock_ctx.fastmcp.result_store = mock_store
+
+    with patch("alphaplan_mcp.tools.parts.fetch_parts_stream", side_effect=mock_factory):
+        await list_parts(negative_filter_term=None, include_archived=True, ctx=mock_ctx)
+
+    assert captured["include_archived"] is True
+    _, kwargs = mock_store.store_result_stream.call_args
+    assert kwargs["provenance"].parameters["include_archived"] is True
+
+
+@pytest.mark.asyncio
+async def test_list_parts_include_archived_default_false():
+    mock_batch = pa.RecordBatch.from_pylist([{"ArtikelNummer": "A234"}])
+
+    def mock_factory(*args, **kwargs):
+        captured["include_archived"] = kwargs.get("include_archived")
+        async def gen():
+            yield mock_batch
+        return gen()
+
+    captured = {}
+    mock_ctx = MagicMock()
+    mock_ctx.session_id = "test_session"
+    mock_store = AsyncMock()
+    mock_store.store_result_stream.return_value = {"result_id": "rs_4"}
+    mock_ctx.fastmcp.result_store = mock_store
+
+    with patch("alphaplan_mcp.tools.parts.fetch_parts_stream", side_effect=mock_factory):
+        await list_parts(negative_filter_term=None, ctx=mock_ctx)
+
+    assert captured["include_archived"] is False
+    _, kwargs = mock_store.store_result_stream.call_args
+    assert kwargs["provenance"].parameters["include_archived"] is False
