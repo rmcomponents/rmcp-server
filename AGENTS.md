@@ -78,6 +78,8 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │       ├── __init__.py
 │       ├── __main__.py           # entry: from .server import main; main()
 │       ├── server.py             # FastMCP app, lifespan, tool registration, /health
+│       ├── alphaplan_resources.py # AlphaPlan schema docs as lazy FileResource (data-driven)
+│       ├── resources/alphaplan/  # 7 markdown docs (00-start … 06-wissensluecken) + IMPLEMENTATION.md (not registered)
 │       ├── config.py             # Settings (pydantic-settings); env-driven
 │       ├── database.py           # pyodbc connections + streaming Arrow-batch fetchers
 │       ├── result_store.py       # ResultSetStore: chunked Redis storage, TTLs, session index
@@ -205,6 +207,7 @@ never a tool failure.
 |---|---|---|
 | `__main__.py` | Entry shim | `main()` from `.server` |
 | `server.py` | FastMCP app; lifespan; tool registration; `/health`; DEBUG `LoggingMiddleware` | `mcp`, `lifespan`, `cleanup_loop`, `health_check`, `main()` |
+| `alphaplan_resources.py` | Registers the 7 AlphaPlan schema docs as MCP resources (data-driven) | `ALPHAPLAN_RESOURCES`, `RESOURCE_DIR`, `register_alphaplan_resources` |
 | `config.py` | Single source of config truth | `Settings`, `settings` |
 | `database.py` | SQL Server via pyodbc; column-description dictionaries; async stream generators | `build_connection`, `fetch_customers_stream`, `fetch_parts_stream`, `fetch_part_stats_stream`, `fetch_line_items_stream`, `fetch_webshop_prices_stream`, `_*_COLUMN_DESCRIPTIONS` |
 | `result_store.py` | Chunked Redis persistence, limits, TTLs, session index, orphan cleanup, incremental stats | `ResultSetStore`, `_IncrementalStats` |
@@ -273,6 +276,26 @@ and `result_set_spec.md` §9.3): `count`, `count_non_null`, `count_distinct` (al
 pair with `count_null` when the drop matters. An invalid operation raises `INVALID_AGGREGATION`
 with `details.available_operations` listing the vocabulary (mirrors `UNKNOWN_COLUMN` →
 `available_columns`).
+
+## 6.1 MCP Resource Inventory
+
+Registered in `server.py` via `register_alphaplan_resources(mcp)` (data-driven from
+`alphaplan_resources.ALPHAPLAN_RESOURCES`; lazy `FileResource`, re-read on every access).
+Docs live in `src/alphaplan_mcp/resources/alphaplan/`; `IMPLEMENTATION.md` is **not** registered.
+
+| URI | Name | Purpose |
+|---|---|---|
+| `alphaplan://start` | AlphaPlan: Start hier | Pflichtlektüre: Konventionen, Belegtypen, Join-Pfade, Fallstricke |
+| `alphaplan://belege` | AlphaPlan: Aufträge, Angebote, Bestellungen, Rechnungen | Belegköpfe/-positionen, Mengen, Termine, Preise, Belegkette |
+| `alphaplan://stammdaten` | AlphaPlan: Artikel, Kunden, Lieferanten, Lagerbestand | Artikelstamm, MPN, Adressen/Klassifikation, Lager, Codes/Wertelisten |
+| `alphaplan://preise-und-zahlen` | AlphaPlan: Preise, Umsatzzahlen, Verfügbarkeitsvorschau | Einkaufs-/Verkaufspreise, Staffeln, Umsatz-/Absatzstatistik, Vorschau |
+| `alphaplan://historie` | AlphaPlan: Belegherkunft und Änderungshistorie | EDI/Webshop/manuell, Änderungs- und Lagerbewegungsprotokoll |
+| `alphaplan://sql-muster` | AlphaPlan: SQL-Muster und Performance-Regeln | Erprobte Queries + Indexlage |
+| `alphaplan://wissensluecken` | AlphaPlan: Bekannte Wissenslücken | Ungeklärte Felder, unerschlossene Bereiche |
+
+All `mime_type = text/markdown`, `tags = {alphaplan, schema}`. Wenn eine Belegdatei per
+`add_resource` geändert/umbenannt wird, muss die Konstante gepflegt werden –
+`tests/unit/test_resources.py` erzwingt Datei↔Registrierung↔URI-Konsistenz.
 
 ---
 

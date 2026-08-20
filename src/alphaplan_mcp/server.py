@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from fastmcp import FastMCP
 from fastmcp.server.middleware.logging import LoggingMiddleware
 from redis.asyncio import Redis
+from .alphaplan_resources import register_alphaplan_resources
 from .apis.mouser.cache import RedisMouserCache
 from .config import settings
 from .result_store import ResultSetStore
@@ -84,6 +85,8 @@ mcp.tool()(result_sets.histogram)
 mcp.tool()(result_sets.join)
 mcp.tool()(result_sets.delete_result_set)
 mcp.tool()(result_sets.normalize_preview)
+
+register_alphaplan_resources(mcp)
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):
