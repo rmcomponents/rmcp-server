@@ -76,8 +76,9 @@ Archivierungsquoten und der Belegkette: `alphaplan://belege`.
 Verkaufsseite `A*`, Einkaufsseite `E*`. AV ist mit deutlichem Abstand der größte
 Belegtyp, davor AL und AR; AB ist der fachlich wichtigste.
 
-**Achtung – Fehler im MCP-Tooling:** `list_line_items` dokumentiert `AA` als Typ 8.
-Real ist `AA` = 1 (Verkaufsanfragen) und 8 = `EA` (Lieferantenanfragen).
+Das MCP-Tool `list_line_items` verwendet dieselben Kürzel: `AA` = 1 (Verkaufsanfragen),
+`EA` = 8 (Lieferantenanfragen). Archivierte Belege schließt es standardmäßig bei **allen**
+Belegtypen aus, auch bei AB – für die volle Historie `include_archived=true` setzen.
 
 ---
 

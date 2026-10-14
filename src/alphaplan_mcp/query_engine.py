@@ -119,6 +119,25 @@ _COMPARE_OPS = {"gt": "gt", "gte": "ge", "lt": "lt", "lte": "le"}
 _MAX_IN_VALUES = 100
 
 
+def _parse_temporal(value: str, dtype: pl.DataType) -> Any:
+    """ISO string -> date / datetime for comparisons with Date / Datetime columns.
+
+    A Date column accepts 'YYYY-MM-DD' (a time part is dropped); a Datetime column accepts a date
+    (= midnight) or a full ISO timestamp (a timezone suffix is dropped).
+    """
+    text = value.strip()
+    try:
+        parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        raise tool_error(
+            "TYPE_MISMATCH",
+            f"Cannot convert '{value}' to a date for column comparison; use ISO format, e.g. '2025-01-31'.",
+        )
+    if dtype == pl.Date:
+        return parsed.date()
+    return parsed.replace(tzinfo=None)  # stored timestamps are naive
+
+
 def _cast_value(value: Any, dtype: pl.DataType) -> Any:
     """Attempt to cast a Python value to match a Polars column dtype."""
     if value is None:
@@ -141,6 +160,9 @@ def _cast_value(value: Any, dtype: pl.DataType) -> Any:
                 return float(value)
             except ValueError:
                 raise tool_error("TYPE_MISMATCH", f"Cannot convert '{value}' to float for column comparison")
+    elif dtype == pl.Date or dtype == pl.Datetime:
+        if isinstance(value, str):
+            return _parse_temporal(value, dtype)
     elif dtype == pl.Boolean:
         if isinstance(value, str):
             if value.lower() in ("true", "1"):

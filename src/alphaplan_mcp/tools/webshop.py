@@ -5,7 +5,7 @@ import csv
 import hashlib
 import io
 import logging
-from datetime import datetime, timezone
+from datetime import date, datetime
 from typing import Any, Dict, List, Optional
 
 from fastmcp import Context
@@ -32,6 +32,8 @@ async def get_webshop_prices(
     Returns a dict with:
     - `csv`: a CSV string with columns:
       MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
+      (`updated_at` = date the most recently refreshed price row of that MPN was last updated,
+      'YYYY-MM-DD'; empty when unknown)
     - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
       excluding the checksum line. Preserve LF line endings and the final newline
       exactly. Verify before using the data.
@@ -54,11 +56,10 @@ async def get_webshop_prices(
         logger.info("get_webshop_prices called for mpns=%s", normalized_mpns)
 
     mpn_order = list(dict.fromkeys(normalized_mpns))
-    fetched_at = datetime.now(timezone.utc).isoformat()
 
     try:
         aggregates = {
-            mpn: {"breakpoints": [], "unit_prices": []}
+            mpn: {"breakpoints": [], "unit_prices": [], "updated_at": None}
             for mpn in mpn_order
         }
 
@@ -77,6 +78,11 @@ async def get_webshop_prices(
                     aggregates[mpn]["unit_prices"].append(
                         float(up) if not isinstance(up, (int, float)) else up
                     )
+                updated = _date_part(row.get("updated_at"))
+                if updated is not None and (
+                    aggregates[mpn]["updated_at"] is None or updated > aggregates[mpn]["updated_at"]
+                ):
+                    aggregates[mpn]["updated_at"] = updated
 
         rows = []
         for mpn in mpn_order:
@@ -89,7 +95,7 @@ async def get_webshop_prices(
                 "breakpoint_max": max(agg["breakpoints"]) if agg["breakpoints"] else None,
                 "unit_price_min": min(agg["unit_prices"]) if agg["unit_prices"] else None,
                 "unit_price_max": max(agg["unit_prices"]) if agg["unit_prices"] else None,
-                "updated_at": fetched_at,
+                "updated_at": agg["updated_at"].isoformat() if agg["updated_at"] else None,
                 "error": None,
             })
 
@@ -107,6 +113,19 @@ async def get_webshop_prices(
     except Exception as e:
         logger.exception("get_webshop_prices failed for mpns=%s", normalized_mpns)
         raise ToolError("INTERNAL_ERROR", f"An unexpected error occurred: {e}")
+
+def _date_part(value: Any) -> Optional[date]:
+    """`WebshopPreise.updated_at` (datetime2, or an ISO string) -> date; None if unusable."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return datetime.fromisoformat(value.strip()).date()
+        except ValueError:
+            return None
+    return None
 
 def _webshop_rows_to_csv(rows: List[Dict[str, Any]]) -> str:
     output = io.StringIO()

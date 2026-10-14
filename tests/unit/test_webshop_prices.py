@@ -45,8 +45,7 @@ async def test_get_webshop_prices_success():
         assert row[2] == "100"
         assert row[3] == "0.15"
         assert row[4] == "0.25"
-        # updated_at is current time, so just check it's non-empty
-        assert row[5] != ""
+        assert row[5] == "2024-01-01"  # date part of the price rows' updated_at
         assert row[6] == ""
 
 
@@ -137,5 +136,35 @@ async def test_get_webshop_prices_json_output():
         assert row["breakpoint_max"] == 1
         assert row["unit_price_min"] == 0.25
         assert row["unit_price_max"] == 0.25
-        assert row["updated_at"] != ""
+        assert row["updated_at"] == "2024-01-01"  # date part of the price row's updated_at
         assert row["error"] is None
+
+
+@pytest.mark.asyncio
+async def test_get_webshop_prices_updated_at_is_latest_price_row_date():
+    from datetime import datetime
+    batch = pa.RecordBatch.from_pylist([
+        {"mpn": "ABC123", "quantity_breakpoint": 1, "unit_price": 0.25,
+         "updated_at": datetime(2026, 3, 1, 9, 0)},
+        {"mpn": "ABC123", "quantity_breakpoint": 100, "unit_price": 0.15,
+         "updated_at": datetime(2026, 8, 4, 13, 31, 10, 342676)},
+        {"mpn": "DEF456", "quantity_breakpoint": 1, "unit_price": 0.50, "updated_at": None},
+    ])
+    # a column holds one type, so the unparseable string comes in its own batch
+    string_batch = pa.RecordBatch.from_pylist([
+        {"mpn": "GHI789", "quantity_breakpoint": 1, "unit_price": 0.70, "updated_at": "not a date"},
+    ])
+
+    async def fake_stream(*args, **kwargs):
+        yield batch
+        yield string_batch
+
+    with patch("alphaplan_mcp.tools.webshop.fetch_webshop_prices_stream", side_effect=fake_stream):
+        result = await get_webshop_prices(["ABC123", "DEF456", "GHI789"], output_format="json")
+        by_mpn = {r["MPN"]: r for r in result["results"]}
+        assert by_mpn["ABC123"]["updated_at"] == "2026-08-04"
+        assert by_mpn["DEF456"]["updated_at"] is None
+        assert by_mpn["GHI789"]["updated_at"] is None
+
+        csv_result = await get_webshop_prices(["DEF456"])
+        assert csv_result["csv"].splitlines()[1].split(",")[5] == ""

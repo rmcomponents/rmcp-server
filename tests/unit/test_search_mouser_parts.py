@@ -102,7 +102,7 @@ async def test_search_mouser_parts_csv_output():
         assert row[2] == "100" # max breakpoint
         assert row[3] == "0.3" # min unit price
         assert row[4] == "0.5" # max unit price
-        assert row[5] == now.isoformat()  # cached_at
+        assert row[5] == now.date().isoformat()  # date part of cached_at
         assert row[6] == ""     # no error
 
 
@@ -156,9 +156,10 @@ async def test_search_mouser_parts_csv_output_fresh():
         assert row[2] == "10"
         assert row[3] == "0.4"
         assert row[4] == "0.5"
-        # updated_at should be a valid ISO timestamp (fetched_at)
-        from datetime import datetime
-        datetime.fromisoformat(row[5])
+        # updated_at is the date part of fetched_at
+        from datetime import date
+        date.fromisoformat(row[5])
+        assert len(row[5]) == 10
         assert row[6] == ""
 
 

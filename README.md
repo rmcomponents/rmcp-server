@@ -85,9 +85,10 @@ read from `.env` in the CWD (Docker Compose feeds from `docker/.env`).
 
 | Tool | Source |
 |---|---|
-| `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) |
+| `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + payment/shipping terms, currency, price levels, delivery address |
 | `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) |
 | `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join |
+| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived, kunden_nummer, nur_offen, include_text_lines)` | SQL Server `BelegePositionen`/`Belege` (+ counterparty); columns depend on the document type |
 | `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` |
 | `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API, Redis-cached |
 

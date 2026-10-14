@@ -207,3 +207,36 @@ async def test_update_access_returns_refreshed_metadata(fake_redis):
     updated = await store.update_access(summary.result_id)
     assert updated is not None
     assert updated.last_accessed_at >= updated.created_at
+
+
+@pytest.mark.asyncio
+async def test_store_stream_with_date_columns(fake_redis):
+    """date32 columns (list_line_items dates) store, carry min/max stats and load back."""
+    import datetime as dt
+    store = ResultSetStore(
+        fake_redis,
+        prefix=settings_for_tests.REDIS_KEY_PREFIX,
+        chunk_rows=settings_for_tests.RESULTSET_CHUNK_ROWS,
+        idle_ttl=settings_for_tests.RESULTSET_IDLE_TTL_SECONDS,
+        max_ttl=settings_for_tests.RESULTSET_MAX_TTL_SECONDS,
+        max_rows=settings_for_tests.RESULTSET_MAX_ROWS,
+        max_bytes=settings_for_tests.RESULTSET_MAX_BYTES,
+    )
+    schema = pa.schema([("BelegDatum", pa.date32()), ("BestaetigtZum", pa.date32())])
+
+    async def batches():
+        yield pa.RecordBatch.from_pylist(
+            [{"BelegDatum": dt.date(2025, 12, 1), "BestaetigtZum": None}], schema=schema)
+        yield pa.RecordBatch.from_pylist(
+            [{"BelegDatum": dt.date(2025, 12, 31), "BestaetigtZum": dt.date(2026, 1, 5)}], schema=schema)
+
+    summary = await store.store_result_stream(
+        session_id="sess1",
+        provenance=ResultProvenance(op="test", parameters={}),
+        batches=batches(),
+    )
+    info = {c.name: c for c in summary.columns}
+    assert str(info["BelegDatum"].min) == "2025-12-01"
+    assert str(info["BelegDatum"].max) == "2025-12-31"
+    loaded = await store.load_table(summary.result_id)
+    assert loaded.column("BestaetigtZum").to_pylist() == [None, dt.date(2026, 1, 5)]

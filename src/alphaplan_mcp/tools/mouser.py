@@ -8,7 +8,7 @@ import hashlib
 import io
 import logging
 from datetime import datetime, timezone
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from fastmcp import Context
 
@@ -23,6 +23,16 @@ logger = logging.getLogger(__name__)
 
 MAX_MPNS_PER_CALL = 25
 
+
+
+def _date_part(timestamp: Optional[str]) -> str:
+    """ISO timestamp -> 'YYYY-MM-DD' for the CSV `updated_at` column ('' when missing/unparseable)."""
+    if not timestamp:
+        return ""
+    try:
+        return datetime.fromisoformat(timestamp).date().isoformat()
+    except ValueError:
+        return ""
 
 async def search_mouser_parts(
     mpns: list[str],
@@ -63,6 +73,7 @@ async def search_mouser_parts(
     If output_format is "csv", returns a dict with keys:
     - `csv`: the CSV string with columns:
       MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
+      (`updated_at` = date of the cached or fresh Mouser data, 'YYYY-MM-DD')
     - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
       excluding the checksum line. Preserve LF line endings and the final newline
       exactly. ***Verify before using the data***.
@@ -112,9 +123,9 @@ async def search_mouser_parts(
 
                 metadata = result.get("metadata") or {}
                 if metadata.get("source") == "cache":
-                    updated_at = metadata.get("cached_at") or ""
+                    updated_at = _date_part(metadata.get("cached_at"))
                 else:
-                    updated_at = metadata.get("fetched_at") or ""
+                    updated_at = _date_part(metadata.get("fetched_at"))
 
                 writer.writerow([
                     mpn,

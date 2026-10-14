@@ -44,7 +44,7 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
 | 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_customers` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
-| 7 | **Tests** | pytest, rootdir = repo root | 338 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
+| 7 | **Tests** | pytest, rootdir = repo root | 396 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
 | 8 | **Health check** | `GET /health` | Custom route in `server.py`; returns `{"status": "healthy", "redis": "ok"}` or 503 when Redis is unreachable |
 
 The canonical boot path is:
@@ -88,7 +88,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │       ├── models.py             # Pydantic models (FilterGroup, SortSpec, AggregationSpec, …)
 │       ├── errors.py             # ToolError codes + safe error wrapping
 │       ├── middleware.py         # StartupTimeMiddleware: stamps `_meta.server_restart_epoch` on tool results
-│       ├── utils.py              # single normalize_mpn() (Mouser + join)
+│       ├── utils.py              # normalize_mpn() (Mouser + join), rtf_to_text()
 │       ├── tools/
 │       │   ├── __init__.py
 │       │   ├── customers.py      # list_customers
@@ -105,7 +105,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 16 test modules, 348 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 18 test modules, 396 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -210,17 +210,17 @@ never a tool failure.
 | `server.py` | FastMCP app; lifespan; tool registration; `/health`; DEBUG `LoggingMiddleware`; unconditionally adds `StartupTimeMiddleware` | `mcp`, `lifespan`, `cleanup_loop`, `health_check`, `main()` |
 | `alphaplan_resources.py` | Registers the 7 AlphaPlan schema docs as MCP resources (data-driven) | `ALPHAPLAN_RESOURCES`, `RESOURCE_DIR`, `register_alphaplan_resources` |
 | `config.py` | Single source of config truth | `Settings`, `settings` |
-| `database.py` | SQL Server via pyodbc; column-description dictionaries; async stream generators | `build_connection`, `fetch_customers_stream`, `fetch_parts_stream`, `fetch_part_stats_stream`, `fetch_line_items_stream`, `fetch_webshop_prices_stream`, `_*_COLUMN_DESCRIPTIONS` |
+| `database.py` | SQL Server via pyodbc; column-description dictionaries; async stream generators | `build_connection`, `fetch_customers_stream`, `fetch_parts_stream`, `fetch_part_stats_stream`, `fetch_line_items_stream`, `fetch_webshop_prices_stream`, `_*_COLUMN_DESCRIPTIONS`, `LineItemColumn`/`LINE_ITEM_COLUMNS`/`_LINE_ITEM_JOINS`/`build_line_items_query` (per-BelegTyp line-item columns) |
 | `result_store.py` | Chunked Redis persistence, limits, TTLs, session index, orphan cleanup, incremental stats | `ResultSetStore`, `_IncrementalStats` |
 | `serialization.py` | Encode/decode tables & metadata | `serialize_table` (LZ4 IPC), `deserialize_table`, `serialize_metadata`, `deserialize_metadata` |
-| `query_engine.py` | Polars engine over stored sets: filters, sort, projection, pagination, CSV/gzip encodings, `store_result`, `join` | `QueryEngine`, `_build_filter_expr`, `_apply_sort`, `_build_agg_exprs`, `_validate_aliases`, `_df_to_rows`, `_format_paginated_result`, `join` |
+| `query_engine.py` | Polars engine over stored sets: filters (ISO date strings are converted for date/datetime columns, `_parse_temporal`), sort, projection, pagination, CSV/gzip encodings, `store_result`, `join` | `QueryEngine`, `_build_filter_expr`, `_apply_sort`, `_build_agg_exprs`, `_validate_aliases`, `_df_to_rows`, `_format_paginated_result`, `join` |
 | `models.py` | Shared Pydantic arg/result types | `FilterClause`, `FilterGroup`, `SortSpec`, `AggregationSpec`, `ColumnInfo`, `ResultProvenance` (+`parents`), `ResultSetMetadata`, `ResultSetSummary`, `ColumnOrigin`, `JoinColumnPair`, `NormalizeOptions`, `JoinReport`, `JoinResultSummary` |
 | `errors.py` | Stable, machine-readable error surface; never leaks internals | `ToolError` (+`to_dict`), `tool_error`, `wrap_redis_error`, `wrap_db_error` |
 | `middleware.py` | Stamps every tool-call result's `_meta` with the startup epoch; changing `server_restart_epoch` ⇒ server restarted ⇒ clients re-load tool set / reset connection | `StartupTimeMiddleware`, `SERVER_RESTART_EPOCH_KEY` |
-| `utils.py` | Single shared normalizer (used by Mouser and `join`) | `normalize_mpn` |
+| `utils.py` | Single shared normalizer (used by Mouser and `join`); RTF → plain-text converter for AlphaPlan long texts | `normalize_mpn`, `rtf_to_text` |
 | `tools/customers.py` | Customer ingestion tool | `list_customers` |
 | `tools/parts.py` | Parts / part-stats tools | `list_parts`, `list_part_stats` |
-| `tools/documents.py` | Document line-item tool (configurable by document type) | `list_line_items`, `DOCUMENT_TYPE_BELEG_TYP`, `_price_summary` |
+| `tools/documents.py` | Document line-item tool (configurable by document type) | `list_line_items`, `DOCUMENT_TYPE_BELEG_TYP`, `_price_summary` (columns come from `database.LINE_ITEM_COLUMNS`) |
 | `tools/webshop.py` | Webshop price tool | `get_webshop_prices` |
 | `tools/mouser.py` | Mouser search tool | `search_mouser_parts` |
 | `tools/document_access.py` | Shared document backend for the AlphaPlan schema docs (list/load/search); delegated to by both the FastMCP resources and the compat tools in `server.py` | `list_document_metadata`, `load_document`, `search_document_content` |
@@ -239,11 +239,11 @@ All tools are registered in `server.py` via `mcp.tool()`.
 
 | Tool | Source | Safety-relevant behavior |
 |---|---|---|
-| `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) | streams, stores, returns summary |
+| `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + `ZahlungsBedingungen`/`Waehrungen`/`VersandBedingungen`/`VersandArten` + first differing `LieferAnschriften` (OUTER APPLY) | streams, stores, returns summary; conditions are the values stored on the address (no fallback to `AdressGruppen` defaults) |
 | `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master. **Default `include_archived=False` also silently excludes archived articles (`IstArchiviert = 1`); pass `include_archived=True` (or `False` explicitly) to control it. The two cuts are independent.** The `Status` column (`Feld02`) is the supplier's ability-to-supply indicator: mostly `rot` (cannot supply) / `gelb` (limited) / `gruen` (no problem), but other values appear due to data-quality issues |
 | `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join | `year` **mandatory**; `limit` returns rows inline instead of storing |
-| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` | One document type per call via `document_type` code → `BelegTyp`: `AN`=2 (Angebot), `AB`=3 (Auftrag), `AL`=4 (Lieferschein Ausgang), `AR`=5 (Rechnung Ausgang), `AA`=1 (Verkaufsanfrage), `EA`=8 (Lieferantenanfrage), `EB`=9 (Bestellung — purchasing), `ER`=10 (Rechnung Eingang); a row is returned when **any** of the four date fields falls in the inclusive range `>=`/`<=` (`LieferDatum`, `LieferDatumBestaetigt`, `OriginalDatum`/`AnlieferungsDatumWunsch`, `BelegDatum`/`B.Datum`); `include_archived` defaults to `true` for `AB` (Auftrag) and `false` for all other types, controlling whether archived documents (`B.IstArchiviert = 1`) are included; joins the counterparty (`KundenNummer` + `KundeOderLieferant` + classification/branch) and delivery dates; extra columns `MengeOffen` (`NochZuUebernehmen` open quantity), `OriginalDatum` (`AnlieferungsDatumWunsch`) and `IstArchiviert` (1 = archived, 0 = not); uneven `document_type` → `INVALID_ARGUMENT` with `available_document_types`; returns summary **plus** `price_summary` (`min`/`max`/`average`/`median`/`count` of `NettoPreisStueckEUR`) and `archived_summary` (`archived`/`non_archived` row counts) |
-| `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; raises `ToolError` on bad input |
+| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived, kunden_nummer, nur_offen, include_text_lines)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` (+ `Artikel`, `Lager` joins for AB) | One document type per call via `document_type` code → `BelegTyp`: `AN`=2, `AB`=3, `AL`=4, `AR`=5, `AA`=1, `EA`=8, `EB`=9, `ER`=10; unknown → `invalid_parameters` with `available_document_types`. Filters (ANDed): `artikel_nummer` and/or `kunden_nummer` (exact `AdressNummer`; at least one required), date range (both or neither; a row matches when **any** of `LieferDatum`, `AnlieferungsDatumBestaetigt`, `AnlieferungsDatumWunsch`, `B.Datum` is inside; required unless `nur_offen`), `nur_offen` (`NochZuUebernehmen > 0`, only AA/AB/EB), `include_archived` (**default `false` for every type**, incl. AB), `include_text_lines` (default `true`; `false` adds `PositionsTyp = 0`). Columns `PositionsTyp` and `ArtikelBezeichnung` (plain text) identify text lines. **Columns depend on the BelegTyp** and come from `database.LINE_ITEM_COLUMNS`: common columns incl. `NettoPreisStueckEUR`, `NettoPreisStueck`/`NettoPreisPro1000` (document currency; per-1000 computed from `PENettoPreis * PEsProBE * BEsProVE`), `Preiseinheit`, `Titel`, `Kommission`, `ZusatzText1/2` (RTF → plain text via `utils.rtf_to_text`); EB: `RequestedDate`/`BestaetigtZum` instead of the generic dates; AB: `KDWunsch` instead of `OriginalDatum` plus `IhrAuftrag`, `IhrAuftragPos`, `KundenArtNr`, `Bestand`, `Status`, `AuftragsTyp`. All date columns are SQL `date` (time of day dropped; Arrow `date32`), 1900-01-01 placeholders → null; the range filter covers whole days (`>= CAST(date_from AS date) AND < DATEADD(day, 1, CAST(date_to AS date))`). Returns summary **plus** `price_summary` (over `NettoPreisStueckEUR` of article lines with an article number only) and `archived_summary` |
+| `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; `updated_at` = date of the most recently updated `WebshopPreise` row of that MPN (empty/null if unknown); raises `ToolError` on bad input |
 | `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation |
 
 ### Generic result-set tools (all require `result_id`)
@@ -373,7 +373,7 @@ which shows `../tests/unit/...`) is:
 
 ```bash
 cd src
-uv run pytest ../tests/unit          # all unit tests (338)
+uv run pytest ../tests/unit          # all unit tests (396)
 uv run pytest ../tests/unit/test_query_engine.py   # single module
 ```
 
@@ -484,6 +484,17 @@ uv run python -m alphaplan_mcp
 4. Register it in `server.py` via `mcp.tool()`.
 5. Add unit tests under `tests/unit/` and run §8.
 6. If new behavior settings are needed, extend `Settings` in `config.py` and update §7 here.
+
+**Add a `list_line_items` column** — append a `LineItemColumn` to `database.LINE_ITEM_COLUMNS`
+(list position = output position). Restrict it with `beleg_typen=frozenset({3})` (BelegTyp codes,
+see `DOCUMENT_TYPE_BELEG_TYP`), override its meaning per type with `type_descriptions`, and if it
+needs another table add a named fragment to `_LINE_ITEM_JOINS` and reference it in `joins`
+(joined only when a selected column needs it; use `LEFT JOIN` so rows are never dropped). Never
+put user input into these fragments. Use `transform=` for Python post-processing (e.g.
+`rtf_to_text` for long-text fields) and the `_as_date` / `_trimmed_text` SQL helpers
+for dates (time of day dropped, 1900-01-01 placeholder → null) and padded strings. The fetcher declares the Arrow schema
+from the cursor types, so all-NULL chunks keep their type. Update the tool docstring and
+`tests/unit/test_list_line_items.py`.
 
 **Add a new external API namespace** — mirror `apis/mouser/`: an `api.py` (httpx client raising
 `ToolError`), a `cache.py` (Redis-backed, best-effort), and a `tools/*.py` wrapper.

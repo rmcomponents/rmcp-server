@@ -4,7 +4,7 @@
 """PyArrow serialization helpers."""
 
 import json
-from datetime import datetime
+from datetime import date, datetime
 from typing import Any, Dict, Optional
 
 import pyarrow as pa
@@ -12,7 +12,7 @@ import pyarrow as pa
 from .models import ResultSetMetadata, ColumnInfo
 
 def _default_encoder(obj: Any) -> Any:
-    if isinstance(obj, datetime):
+    if isinstance(obj, (datetime, date)):  # date: min/max stats of date32 columns
         return obj.isoformat()
     raise TypeError(f"Object of type {type(obj)} is not JSON serializable")
 

@@ -1,3 +1,4 @@
+import codecs
 import re
 import unicodedata
 
@@ -83,3 +84,159 @@ def normalize_mpn(value):
     unchanged (so numeric join keys are matched on raw equality).
     """
     return normalize_mpn_with_steps(value)[0]
+
+
+# --- RTF -> plain text ------------------------------------------------------------------
+# AlphaPlan stores long texts (ZusatzText1..3, Vorsatz, Nachsatz, ...) either as plain text or
+# as RichEdit RTF. The tokenizer below follows the RTF 1.9 spec closely enough for RichEdit /
+# Word output; anything it cannot make sense of is returned unchanged.
+
+_RTF_TOKEN = re.compile(
+    r"\\([a-zA-Z]{1,32})(-?\d{1,10})? ?"  # control word with optional numeric arg
+    r"|\\'([0-9a-fA-F]{2})"             # hex-escaped byte
+    r"|\\([^a-zA-Z])"                   # control symbol
+    r"|([{}])"                          # group start / end
+    r"|[\r\n]+"                          # raw line breaks carry no meaning in RTF
+    r"|(.)",                            # literal text
+    re.S,
+)
+
+# Destinations whose content is never visible text.
+_RTF_DESTINATIONS = frozenset({
+    "aftncn", "aftnsep", "aftnsepc", "annotation", "atnauthor", "atndate", "atnicn", "atnid",
+    "atnparent", "atnref", "atntime", "atrfend", "atrfstart", "author", "background",
+    "bkmkend", "bkmkstart", "blipuid", "buptim", "category", "colorschememapping", "colortbl",
+    "comment", "company", "creatim", "datafield", "datastore", "defchp", "defpap", "do",
+    "doccomm", "docvar", "dptxbxtext", "ebcend", "ebcstart", "factoidname", "falt", "fchars",
+    "ffdeftext", "ffentrymcr", "ffexitmcr", "ffformat", "ffhelptext", "ffl", "ffname",
+    "ffstattext", "file", "filetbl", "fldinst", "fldtype", "fname", "fontemb", "fontfile",
+    "fonttbl", "footer", "footerf", "footerl", "footerr", "footnote", "formfield", "ftncn",
+    "ftnsep", "ftnsepc", "g", "generator", "gridtbl", "header", "headerf", "headerl",
+    "headerr", "hl", "hlfr", "hlinkbase", "hlloc", "hlsrc", "hsv", "htmltag", "info",
+    "keycode", "keywords", "latentstyles", "lchars", "levelnumbers", "leveltext", "lfolevel",
+    "linkval", "list", "listlevel", "listname", "listoverride", "listoverridetable",
+    "listpicture", "liststylename", "listtable", "listtext", "lsdlockedexcept", "manager",
+    "mmathPr", "nesttableprops", "nextfile", "nonesttables", "objalias", "objclass",
+    "objdata", "object", "objname", "objsect", "objtime", "oldcprops", "oldpprops",
+    "oldsprops", "oldtprops", "oleclsid", "operator", "panose", "password", "passwordhash",
+    "pgp", "pgptbl", "picprop", "pict", "pn", "pnseclvl", "pntext", "pntxta", "pntxtb",
+    "printim", "private", "propname", "protend", "protstart", "protusertbl", "pxe", "result",
+    "revtbl", "revtim", "rsidtbl", "rxe", "shp", "shpgrp", "shpinst", "shppict", "shprslt",
+    "shptxt", "sn", "sp", "staticval", "stylesheet", "subject", "sv", "svb", "tc", "template",
+    "themedata", "title", "txe", "ud", "upr", "userprops", "wgrffmtfilter", "windowcaption",
+    "writereservation", "writereservhash", "xe", "xform", "xmlattrname", "xmlattrvalue",
+    "xmlclose", "xmlname", "xmlnstbl", "xmlopen",
+})
+
+_RTF_SPECIAL_WORDS = {
+    "par": "\n", "line": "\n", "sect": "\n\n", "page": "\n\n", "row": "\n",
+    "tab": "\t", "cell": " | ", "nestcell": " | ",
+    "emdash": "\u2014", "endash": "\u2013", "emspace": "\u2003", "enspace": "\u2002",
+    "qmspace": "\u2005", "bullet": "\u2022", "lquote": "\u2018", "rquote": "\u2019",
+    "ldblquote": "\u201c", "rdblquote": "\u201d",
+}
+
+_RTF_SPECIAL_SYMBOLS = {
+    "~": "\u00a0", "_": "-", "-": "", "\\": "\\", "{": "{", "}": "}",
+    "\n": "\n", "\r": "\n",  # backslash + line break is an alternative \par
+}
+
+
+def _rtf_codec(arg):
+    try:
+        return codecs.lookup(f"cp{int(arg)}").name
+    except (LookupError, TypeError, ValueError):
+        return "cp1252"
+
+
+def _strip_rtf(rtf):
+    out = []
+    pending = bytearray()      # consecutive \'hh bytes, decoded together (DBCS code pages)
+    encoding = "cp1252"
+    stack = []
+    ignorable = False
+    ucskip = 1                 # characters to skip after \uN (\ucN)
+    curskip = 0
+
+    def emit(text):
+        if pending:
+            out.append(pending.decode(encoding, errors="replace"))
+            pending.clear()
+        out.append(text)
+
+    for match in _RTF_TOKEN.finditer(rtf):
+        word, arg, hexbyte, symbol, brace, char = match.groups()
+        if brace:
+            curskip = 0
+            if brace == "{":
+                stack.append((ucskip, ignorable))
+            elif stack:
+                ucskip, ignorable = stack.pop()
+            else:
+                break  # unbalanced closing brace: end of document
+        elif symbol:
+            curskip = 0
+            if symbol == "*":
+                ignorable = True
+            elif not ignorable and symbol in _RTF_SPECIAL_SYMBOLS:
+                emit(_RTF_SPECIAL_SYMBOLS[symbol])
+        elif word:
+            curskip = 0
+            if word in _RTF_DESTINATIONS:
+                ignorable = True
+            elif word == "ansicpg":
+                encoding = _rtf_codec(arg)
+            elif ignorable:
+                pass
+            elif word in _RTF_SPECIAL_WORDS:
+                emit(_RTF_SPECIAL_WORDS[word])
+            elif word == "uc" and arg is not None:
+                ucskip = max(int(arg), 0)
+            elif word == "u" and arg is not None:
+                code = int(arg)
+                if code < 0:
+                    code += 0x10000
+                emit(chr(code))
+                curskip = ucskip
+        elif hexbyte:
+            if curskip > 0:
+                curskip -= 1
+            elif not ignorable:
+                pending.append(int(hexbyte, 16))
+        elif char:
+            if curskip > 0:
+                curskip -= 1
+            elif not ignorable:
+                emit(char)
+    emit("")
+    text = "".join(out)
+    # \uN can yield UTF-16 surrogate halves (characters outside the BMP); recombine them.
+    return text.encode("utf-16", "surrogatepass").decode("utf-16", errors="replace")
+
+
+def rtf_to_text(value):
+    """
+    Convert an AlphaPlan long-text value to plain text.
+
+    RTF values (starting with ``{\\rtf``) are converted: formatting, font/colour tables and
+    other invisible destinations are dropped, ``\\par``/``\\line`` become line breaks and
+    hex/unicode escapes are decoded using the document's code page. Line endings are
+    normalized to ``\\n`` and surrounding whitespace is trimmed; whitespace-only results
+    become ``None``.
+
+    Non-RTF strings are returned with the same line-ending/trim normalization but otherwise
+    untouched – these fields often hold free text or garbage, so nothing is parsed out of
+    them. Non-string values (incl. ``None``) are returned unchanged. If an RTF value cannot
+    be converted, the original string is returned rather than raising.
+    """
+    if not isinstance(value, str):
+        return value
+    text = value
+    if value.lstrip().startswith("{\\rtf"):
+        try:
+            text = _strip_rtf(value.lstrip())
+        except Exception:  # never fail a whole result set over one malformed text
+            return value
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = "\n".join(line.rstrip() for line in text.split("\n")).strip()
+    return text or None

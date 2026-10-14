@@ -26,6 +26,16 @@ async def list_customers(
     The `customer_name` parameter supports SQL LIKE wildcards:
     - Use `%` to match any sequence of characters (e.g., `%GmbH%`).
     - Use `_` to match a single character.
+
+    Besides name, classification and responsible employees, each row carries the customer's
+    master-data conditions (AlphaPlan customer master, tabs "Zahlung" / "Versand"):
+    `zahlungsbedingung` (payment terms text), `waehrung` (currency code), `preisstufe_standard`
+    and `preisstufe_vorrangig` (standard / priority price level), `versandbedingung` (shipping
+    terms / Incoterm text, e.g. 'DAP delivery address Incoterms 2020'), `versandart` (shipping
+    method), `lieferadresse` (one-line delivery address if it
+    differs from the main address, else null) and `lieferadressen_anzahl` (how many differing
+    delivery addresses exist; >1 means `lieferadresse` shows only the standard / first one).
+    These are the values stored on the customer itself.
     """
     store: ResultSetStore = ctx.fastmcp.result_store
 
