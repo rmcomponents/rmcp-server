@@ -76,7 +76,7 @@ Archivierungsquoten und der Belegkette: `alphaplan://belege`.
 Verkaufsseite `A*`, Einkaufsseite `E*`. AV ist mit deutlichem Abstand der größte
 Belegtyp, davor AL und AR; AB ist der fachlich wichtigste.
 
-Das MCP-Tool `list_line_items` verwendet dieselben Kürzel: `AA` = 1 (Verkaufsanfragen),
+Das MCP-Tool `list_beleg_positionen` verwendet dieselben Kürzel: `AA` = 1 (Verkaufsanfragen),
 `EA` = 8 (Lieferantenanfragen). Archivierte Belege schließt es standardmäßig bei **allen**
 Belegtypen aus, auch bei AB – für die volle Historie `include_archived=true` setzen.
 
@@ -118,7 +118,7 @@ Belege ──BelegeID──> BelegePositionen ──ArtikelID──> Artikel ─
   dort dauerhaft auf der Gesamtmenge.
 * **`IstLieferant` verfehlt 43 % der Lieferanten** – lieber über `BelegTyp` trennen.
 * **`Texte` bildet die realen Werte nicht zuverlässig ab** (Texte → `alphaplan://stammdaten`).
-* **`list_parts` blendet per Default 92 % des Artikelstamms aus** (`TCC%`).
+* **`list_artikel` blendet per Default 92 % des Artikelstamms aus** (`TCC%`).
 * **`Feld02` = `grün` mit Umlaut**, nicht `gruen`.
 * **Ein Artikel kann in mehreren Lagerorten liegen** – `TOP (1)` über das Abbuchungslager
   ist nicht der Gesamtbestand, und Sperr-/Webshop-/Strategielager zählen nicht in die

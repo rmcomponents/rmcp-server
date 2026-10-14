@@ -79,12 +79,12 @@ if settings.DEBUG:
     )
 
 # Register tools
-mcp.tool()(customers.list_customers)
-mcp.tool()(mouser_tool.search_mouser_parts)
-mcp.tool()(parts.list_parts)
-mcp.tool()(parts.list_part_stats)
-mcp.tool()(documents.list_line_items)
-mcp.tool()(webshop.get_webshop_prices)
+mcp.tool()(customers.list_adressen)
+mcp.tool()(mouser_tool.search_mouser_artikel)
+mcp.tool()(parts.list_artikel)
+mcp.tool()(parts.list_artikel_statistik)
+mcp.tool()(documents.list_beleg_positionen)
+mcp.tool()(webshop.get_webshop_preise)
 
 mcp.tool()(result_sets.get_result_info)
 mcp.tool()(result_sets.explain_columns)
@@ -116,7 +116,7 @@ register_alphaplan_resources(mcp)
 
 
 @mcp.tool()
-async def list_documents():
+async def list_documentation():
     """List the AlphaPlan schema documents that are useful to an LLM.
 
     Compatibility wrapper around this server's MCP resources. Equivalent
@@ -125,13 +125,13 @@ async def list_documents():
     the model.
 
     Returns lightweight metadata per document: URI, name/title, description
-    and MIME type. Use read_document(uri) to load a document's content.
+    and MIME type. Use read_documentation(uri) to load a document's content.
     """
     return await document_access.list_document_metadata(mcp)
 
 
 @mcp.tool()
-async def read_document(uri: str):
+async def read_documentation(uri: str):
     """Read the text content of a document by its resource URI.
 
     Compatibility wrapper around this server's MCP resources. Equivalent
@@ -140,14 +140,14 @@ async def read_document(uri: str):
     the model.
 
     The URI must identify a document reachable through the standard resource
-    implementation (e.g. one the list_documents tool returned). Unknown or
+    implementation (e.g. one the list_documentation tool returned). Unknown or
     unavailable URIs raise RESOURCE_NOT_FOUND.
     """
     return await document_access.load_document(mcp, uri)
 
 
 @mcp.tool()
-async def search_documents(query: str):
+async def search_documentation(query: str):
     """Search the available textual documents and return the most relevant.
 
     This is a convenience/discovery operation over this server's MCP resources
@@ -158,7 +158,7 @@ async def search_documents(query: str):
 
     Scans document metadata and content for the query, returning compact
     results (resource URI, title, relevant excerpt, relevance) so the model can
-    decide whether to call read_document(uri).
+    decide whether to call read_documentation(uri).
     """
     return await document_access.search_document_content(mcp, query)
 

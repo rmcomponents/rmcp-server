@@ -43,8 +43,8 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 | 3 | **App assembly / wiring** | `src/alphaplan_mcp/server.py` | Builds the `FastMCP("AlphaPlanMCP")` instance, lifespan, Redis client, `ResultSetStore`, Mouser cache, cleanup loop, registers all 17 tools + 3 document compat tools, adds the `/health` route and DEBUG middleware |
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
-| 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_customers` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
-| 7 | **Tests** | pytest, rootdir = repo root | 396 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
+| 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_adressen` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
+| 7 | **Tests** | pytest, rootdir = repo root | 434 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
 | 8 | **Health check** | `GET /health` | Custom route in `server.py`; returns `{"status": "healthy", "redis": "ok"}` or 503 when Redis is unreachable |
 
 The canonical boot path is:
@@ -91,11 +91,11 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │       ├── utils.py              # normalize_mpn() (Mouser + join), rtf_to_text()
 │       ├── tools/
 │       │   ├── __init__.py
-│       │   ├── customers.py      # list_customers
-│       │   ├── parts.py          # list_parts, list_part_stats
-│       │   ├── documents.py      # list_line_items
-│       │   ├── webshop.py        # get_webshop_prices
-│       │   ├── mouser.py         # search_mouser_parts
+│       │   ├── customers.py      # list_adressen
+│       │   ├── parts.py          # list_artikel, list_artikel_statistik
+│       │   ├── documents.py      # list_beleg_positionen
+│       │   ├── webshop.py        # get_webshop_preise
+│       │   ├── mouser.py         # search_mouser_artikel
 │       │   └── result_sets.py    # 11 generic result-set tools (incl. join)
 │       └── apis/
 │           └── mouser/
@@ -105,7 +105,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 18 test modules, 396 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 20 test modules, 434 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -142,11 +142,11 @@ versions, keep both in sync where they overlap.
 
 ```
 MCP client
-   │  tool call (e.g. list_customers, list_parts, list_line_items)
+   │  tool call (e.g. list_adressen, list_artikel, list_beleg_positionen)
    ▼
 tools/*.py  ──►  database.py fetch_*_stream()     # pyodbc, streaming pa.RecordBatch
    │               (blocking ODBC in run_in_executor, batches pushed through asyncio.Queue)
-   │               (list_line_items: also accumulates NettoPreisStueckEUR for its price_summary)
+   │               (list_beleg_positionen: also accumulates NettoPreisStueckEUR for its price_summary)
    ▼
 result_store.ResultSetStore.store_result_stream() # enforces row/byte limits, incremental stats
    │                 writes chunk keys + meta key + session index via Redis pipeline
@@ -168,11 +168,12 @@ response rows / derived result set
 ### 4.2 Result-set lifecycle
 
 1. Ingestion tool streams data into Redis as chunks; metadata holds stats, provenance, TTLs.
-2. Every set has an **idle TTL** (`RESULTSET_IDLE_TTL_SECONDS`, default 1 h) extended on access
-   (`ResultSetStore.update_access`, bounded by the absolute max) and an **absolute max lifetime**
-   (`RESULTSET_MAX_TTL_SECONDS`, default 24 h). The reported `expires_at` reflects the **actual**
-   current expiry — i.e. `now + idle_ttl`, re-armed & persisted on every access — not the static
-   absolute cap. `absolute_expires_at` is the immutable upper bound kept for `update_access`; old
+2. Every set has an **idle TTL** (`RESULTSET_IDLE_TTL_SECONDS`, default 1 h) that starts at
+   creation (`ResultSetStore._initial_ttl`) and is re-armed on every access
+   (`ResultSetStore.update_access`), bounded by the **absolute max lifetime**
+   (`RESULTSET_MAX_TTL_SECONDS`, default 24 h). Reading never shortens a set's life. The reported
+   `expires_at` (create summary, `get_result_info`) is always the **actual** current expiry
+   (`now + idle_ttl`, capped) — not the static absolute cap. `absolute_expires_at` is the immutable upper bound kept for `update_access`; old
    stored metadata without `expires_at` backfills it to `absolute_expires_at` on load.
 3. Sets are keyed by `result_id`, not by session. There are **no ownership checks anywhere**:
    any `result_id` can be read, joined, or deleted regardless of which session created it. The
@@ -193,7 +194,7 @@ alias validation, type/description inheritance and folding `<source>` fields int
 
 ### 4.4 Mouser flow
 
-`search_mouser_parts` → normalize MPNs (`utils.normalize_mpn`: NFKC, dash-fold, collapse
+`search_mouser_artikel` → normalize MPNs (`utils.normalize_mpn`: NFKC, dash-fold, collapse
 whitespace, uppercase, strip non-`[A-Z0-9\-_.]`), dedupe order-preserving → per normalized MPN, parallel cached lookup via
 `RedisMouserCache` (`{prefix}:mouser:part:{normalized}`, JSON envelope `{stored_at,payload}`
 with Redis `EX`) else httpx `search_by_part_number` → `extract_purchasing_parts` → cache →
@@ -218,11 +219,11 @@ never a tool failure.
 | `errors.py` | Stable, machine-readable error surface; never leaks internals | `ToolError` (+`to_dict`), `tool_error`, `wrap_redis_error`, `wrap_db_error` |
 | `middleware.py` | Stamps every tool-call result's `_meta` with the startup epoch; changing `server_restart_epoch` ⇒ server restarted ⇒ clients re-load tool set / reset connection | `StartupTimeMiddleware`, `SERVER_RESTART_EPOCH_KEY` |
 | `utils.py` | Single shared normalizer (used by Mouser and `join`); RTF → plain-text converter for AlphaPlan long texts | `normalize_mpn`, `rtf_to_text` |
-| `tools/customers.py` | Customer ingestion tool | `list_customers` |
-| `tools/parts.py` | Parts / part-stats tools | `list_parts`, `list_part_stats` |
-| `tools/documents.py` | Document line-item tool (configurable by document type) | `list_line_items`, `DOCUMENT_TYPE_BELEG_TYP`, `_price_summary` (columns come from `database.LINE_ITEM_COLUMNS`) |
-| `tools/webshop.py` | Webshop price tool | `get_webshop_prices` |
-| `tools/mouser.py` | Mouser search tool | `search_mouser_parts` |
+| `tools/customers.py` | Customer ingestion tool | `list_adressen` |
+| `tools/parts.py` | Parts / part-stats tools | `list_artikel`, `list_artikel_statistik` |
+| `tools/documents.py` | Document line-item tool (configurable by document type) | `list_beleg_positionen`, `DOCUMENT_TYPE_BELEG_TYP`, `_price_summary` (columns come from `database.LINE_ITEM_COLUMNS`) |
+| `tools/webshop.py` | Webshop price tool | `get_webshop_preise` |
+| `tools/mouser.py` | Mouser search tool | `search_mouser_artikel` |
 | `tools/document_access.py` | Shared document backend for the AlphaPlan schema docs (list/load/search); delegated to by both the FastMCP resources and the compat tools in `server.py` | `list_document_metadata`, `load_document`, `search_document_content` |
 | `tools/result_sets.py` | Generic result-set tools (thin wrappers over `QueryEngine`) | `get_result_info`, `explain_columns`, `describe_columns`, `list_rows`, `count_rows`, `query_rows`, `distinct_values`, `aggregate`, `group_by`, `histogram`, `join`, `delete_result_set`, `normalize_preview` |
 | `apis/mouser/api.py` | Mouser REST client | `search_by_part_number` |
@@ -239,19 +240,19 @@ All tools are registered in `server.py` via `mcp.tool()`.
 
 | Tool | Source | Safety-relevant behavior |
 |---|---|---|
-| `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + `ZahlungsBedingungen`/`Waehrungen`/`VersandBedingungen`/`VersandArten` + first differing `LieferAnschriften` (OUTER APPLY) | streams, stores, returns summary; conditions are the values stored on the address (no fallback to `AdressGruppen` defaults) |
-| `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master. **Default `include_archived=False` also silently excludes archived articles (`IstArchiviert = 1`); pass `include_archived=True` (or `False` explicitly) to control it. The two cuts are independent.** The `Status` column (`Feld02`) is the supplier's ability-to-supply indicator: mostly `rot` (cannot supply) / `gelb` (limited) / `gruen` (no problem), but other values appear due to data-quality issues |
-| `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join | `year` **mandatory**; `limit` returns rows inline instead of storing |
-| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived, kunden_nummer, nur_offen, include_text_lines)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` (+ `Artikel`, `Lager` joins for AB) | One document type per call via `document_type` code → `BelegTyp`: `AN`=2, `AB`=3, `AL`=4, `AR`=5, `AA`=1, `EA`=8, `EB`=9, `ER`=10; unknown → `invalid_parameters` with `available_document_types`. Filters (ANDed): `artikel_nummer` and/or `kunden_nummer` (exact `AdressNummer`; at least one required), date range (both or neither; a row matches when **any** of `LieferDatum`, `AnlieferungsDatumBestaetigt`, `AnlieferungsDatumWunsch`, `B.Datum` is inside; required unless `nur_offen`), `nur_offen` (`NochZuUebernehmen > 0`, only AA/AB/EB), `include_archived` (**default `false` for every type**, incl. AB), `include_text_lines` (default `true`; `false` adds `PositionsTyp = 0`). Columns `PositionsTyp` and `ArtikelBezeichnung` (plain text) identify text lines. **Columns depend on the BelegTyp** and come from `database.LINE_ITEM_COLUMNS`: common columns incl. `NettoPreisStueckEUR`, `NettoPreisStueck`/`NettoPreisPro1000` (document currency; per-1000 computed from `PENettoPreis * PEsProBE * BEsProVE`), `Preiseinheit`, `Titel`, `Kommission`, `ZusatzText1/2` (RTF → plain text via `utils.rtf_to_text`); EB: `RequestedDate`/`BestaetigtZum` instead of the generic dates; AB: `KDWunsch` instead of `OriginalDatum` plus `IhrAuftrag`, `IhrAuftragPos`, `KundenArtNr`, `Bestand`, `Status`, `AuftragsTyp`. All date columns are SQL `date` (time of day dropped; Arrow `date32`), 1900-01-01 placeholders → null; the range filter covers whole days (`>= CAST(date_from AS date) AND < DATEADD(day, 1, CAST(date_to AS date))`). Returns summary **plus** `price_summary` (over `NettoPreisStueckEUR` of article lines with an article number only) and `archived_summary` |
-| `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; `updated_at` = date of the most recently updated `WebshopPreise` row of that MPN (empty/null if unknown); raises `ToolError` on bad input |
-| `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation |
+| `list_adressen(such_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + `ZahlungsBedingungen`/`Waehrungen`/`VersandBedingungen`/`VersandArten` + first differing `LieferAnschriften` (OUTER APPLY) | streams, stores, returns summary; conditions are the values stored on the address (no fallback to `AdressGruppen` defaults) |
+| `list_artikel(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) | `sample_n` ⇒ random sample of up to n rows **drawn from the filtered result** (post-filter, via `ORDER BY NEWID()` on the filtered subquery). **Default `negative_filter_term='TCC%'` silently excludes all `TCC` articles (tens of thousands); when the default applies the returned summary includes a `warning` field.** Pass `negative_filter_term=None` for the full master. **Default `include_archived=False` also silently excludes archived articles (`IstArchiviert = 1`); pass `include_archived=True` (or `False` explicitly) to control it. The two cuts are independent.** The `Status` column (`Feld02`) is the supplier's ability-to-supply indicator: mostly `rot` (cannot supply) / `gelb` (limited) / `gruen` (no problem), but other values appear due to data-quality issues |
+| `list_artikel_statistik(artikel_nummer, jahr, einkauf_verkauf, limit)` | SQL Server `StatistikenArtikel` join | `jahr` **mandatory**; `limit` returns rows inline instead of storing |
+| `list_beleg_positionen(artikel_nummer, beleg_typ, date_from, date_to, include_archived, adress_nummer, open_only, include_text_lines)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` (+ `Artikel`, `Lager` joins for AB) | One document type per call via `document_type` code → `BelegTyp`: `AN`=2, `AB`=3, `AL`=4, `AR`=5, `AA`=1, `EA`=8, `EB`=9, `ER`=10; unknown → `invalid_parameters` with `available_document_types`. Filters (ANDed): `mpn` and/or `counterparty_number` (exact `AdressNummer`; at least one required), date range (both or neither; a row matches when **any** of `LieferDatum`, `AnlieferungsDatumBestaetigt`, `AnlieferungsDatumWunsch`, `B.Datum` is inside; required unless `open_only`), `open_only` (`NochZuUebernehmen > 0`, only AA/AB/EB), `include_archived` (**default `false` for every type**, incl. AB), `include_text_lines` (default `true`; `false` adds `PositionsTyp = 0`). Columns `PositionsTyp` and `ArtikelBezeichnung` (plain text) identify text lines. **Columns depend on the BelegTyp** and come from `database.LINE_ITEM_COLUMNS`: common columns incl. `NettoPreisStueckEUR`, `NettoPreisStueck`/`NettoPreisPro1000` (document currency; per-1000 computed from `PENettoPreis * PEsProBE * BEsProVE`), `Preiseinheit`, `Titel`, `Kommission`, `ZusatzText1/2` (RTF → plain text via `utils.rtf_to_text`); EB: `RequestedDate`/`BestaetigtZum` instead of the generic dates; AB: `KDWunsch` instead of `OriginalDatum` plus `IhrAuftrag`, `IhrAuftragPos`, `KundenArtNr`, `Bestand`, `Status`, `AuftragsTyp`. All date columns are SQL `date` (time of day dropped; Arrow `date32`), 1900-01-01 placeholders → null; the range filter covers whole days (`>= CAST(date_from AS date) AND < DATEADD(day, 1, CAST(date_to AS date))`). Dates must be ISO `YYYY-MM-DD` and `date_from <= date_to` (validated before SQL). All text columns are trimmed, empty → null. Prices carry 8 decimals (`NettoPreisStueck*`), 6 (`NettoPreisPro1000*`) and 10 (`BelegKursFaktor`); `NettoPreisPro1000EUR` and `WarenGruppe`/`WarenGruppenNummer` (via `Artikel` + `WarenGruppen` joins) exist for every type. An empty result keeps its schema (fetcher emits one empty batch). Returns summary **plus** `price_summary` (over `NettoPreisStueckEUR` of part lines only: no text/empty lines, no `RMC_*` article groups = freight, packaging, services …) and `archived_summary` |
+| `get_webshop_preise(artikel_nummern, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; `updated_at` = date of the most recently updated `WebshopPreise` row of that MPN (empty/null if unknown); every requested MPN gets a row in input order, unknown ones with `error` = 'no webshop prices found'; raises `ToolError` on bad input |
+| `search_mouser_artikel(artikel_nummern, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation; CSV `error` also flags 'no parts found' / 'no price breaks' |
 
 ### Generic result-set tools (all require `result_id`)
 
 | Tool | Purpose | Notable params |
 |---|---|---|
 | `get_result_info` | Metadata + column stats, safe field set (no owner id) | `result_id` |
-| `explain_columns` | Per-column stats, optional `examples` | `columns`, `include_examples` |
+| `explain_columns` | Per-column stats, optional `examples`; `distinct_count` excludes null | `columns`, `include_examples` |
 | `describe_columns` | Per-column distribution bundle (mean, stddev, min, percentiles, max, skewness, count_negative, counts); whole set or per group | `columns`, `percentiles` (default `[0.05,.25,.5,.75,.95]`, linear), `filters`, `group_columns` (≤3) |
 | `list_rows` | Paginate raw rows; sorting/projection applied per call | `columns`, `sort`, `limit`, `offset`, `format` (`json`/`csv`), `encoding` (`plain`/`gzip+base64`), `round_to`, `stable_sort`, `store_result`, `result_label` |
 | `count_rows` | Row count w/ optional filters | `filters` |
@@ -313,9 +314,9 @@ the MCP interface but **not** the data/loading layer.
 
 | Tool | Purpose | Notable behavior |
 |---|---|---|
-| `list_documents()` | List useful documents with lightweight metadata (URI, name, description, MIME type) | Same source of truth as `resources/list`; no args |
-| `read_document(uri)` | Return text content for a resource URI | Delegates to `server.read_resource` (same path as `resources/read`); unknown/unavailable URI → ToolError `RESOURCE_NOT_FOUND` |
-| `search_documents(query)` | Discovery/search across document metadata + content | Convenience operation over the same resources, not a replacement resource interface; returns compact `[{uri, title, excerpt, relevance}]` |
+| `list_documentation()` | List useful documents with lightweight metadata (URI, name, description, MIME type) | Same source of truth as `resources/list`; no args |
+| `read_documentation(uri)` | Return text content for a resource URI | Delegates to `server.read_resource` (same path as `resources/read`); unknown/unavailable URI → ToolError `RESOURCE_NOT_FOUND` |
+| `search_documentation(query)` | Discovery/search across document metadata + content | Convenience operation over the same resources, not a replacement resource interface; returns compact `[{uri, title, excerpt, relevance}]` |
 
 ---
 
@@ -343,7 +344,7 @@ Env file: `.env` in the CWD; Docker Compose feeds it from `docker/.env`.
 | `TOOL_MAX_GROUP_COLUMNS` | `3` | Cap for `group_by` columns |
 | `TOOL_MAX_AGGREGATIONS` | `10` | Cap for aggregation list |
 | `SQLSERVER_HOST` / `_DATABASE` (`ApiPreise`) / `_USER` / `_PASSWORD` / `_DRIVER` (`ODBC Driver 18 for SQL Server`) / `_TRUST_CERTIFICATE` (`yes`) / `_QUERY_TIMEOUT_SECONDS` (`120`) | — | SQL Server connectivity; connection enforces `ReadOnly`, `Encrypt=yes`, autocommit |
-| `MOUSER_API_KEY` | — | Mouser API key (required for `search_mouser_parts`) |
+| `MOUSER_API_KEY` | — | Mouser API key (required for `search_mouser_artikel`) |
 | `MOUSER_API_BASE_URL` | `https://api.mouser.com/api/v1` | Mouser endpoint |
 | `MOUSER_TIMEOUT_SECONDS` | `15.0` | httpx timeout |
 | `MOUSER_CACHE_TTL_HOURS` | `168.0` | Default cache TTL (7 days) |
@@ -373,7 +374,7 @@ which shows `../tests/unit/...`) is:
 
 ```bash
 cd src
-uv run pytest ../tests/unit          # all unit tests (396)
+uv run pytest ../tests/unit          # all unit tests (434)
 uv run pytest ../tests/unit/test_query_engine.py   # single module
 ```
 
@@ -403,7 +404,7 @@ uv run python -m alphaplan_mcp
    `INVALID_ARGUMENT`, `MOUSER_TIMEOUT`, …). Never leak stack traces, SQL, Redis internals,
    or connection strings. Each result-set tool wraps calls in `try/except ToolError` and returns
    `e.to_dict()` (JSON-able) rather than raising. During ingestion tools, the same pattern applies.
-   **Inconsistency to be aware of:** `webshop.py` and `parts.list_part_stats` **raise**
+   **Inconsistency to be aware of:** `webshop.py` and `parts.list_artikel_statistik` **raise**
    `ToolError` instead of returning `to_dict()`; keep behavior matching the surrounding tool when
    editing one of them.
 2. **Session ownership** — There are **no ownership checks anywhere**; every `result_id` access goes
@@ -444,9 +445,9 @@ uv run python -m alphaplan_mcp
 - **`src/README.md` is a pointer** to the root `README.md` and holds no layout/doc content of its
   own; the root `README.md` is the canonical user-facing documentation. The Dockerfile previously
   worked around the missing root README by copying `src/README.md` — this is no longer needed.
-- **`src/main.py` is legacy** — duplicated `list_customers` logic with env-var parsing; do not
+- **`src/main.py` is legacy** — duplicated `list_adressen` logic with env-var parsing; do not
   extend. Prefer the packaged entry points.
-- **Inconsistent error style** — `webshop.py` / `list_part_stats` raise `ToolError`; most other
+- **Inconsistent error style** — `webshop.py` / `list_artikel_statistik` raise `ToolError`; most other
   tools return `to_dict()`.
 - **`default_cache`** in `apis/mouser/cache.py` starts as `NullMouserCache()` and is replaced in
   `server.lifespan` with `RedisMouserCache(app.redis)`. Tools importing `default_cache` must read
@@ -485,7 +486,7 @@ uv run python -m alphaplan_mcp
 5. Add unit tests under `tests/unit/` and run §8.
 6. If new behavior settings are needed, extend `Settings` in `config.py` and update §7 here.
 
-**Add a `list_line_items` column** — append a `LineItemColumn` to `database.LINE_ITEM_COLUMNS`
+**Add a `list_beleg_positionen` column** — append a `LineItemColumn` to `database.LINE_ITEM_COLUMNS`
 (list position = output position). Restrict it with `beleg_typen=frozenset({3})` (BelegTyp codes,
 see `DOCUMENT_TYPE_BELEG_TYP`), override its meaning per type with `type_descriptions`, and if it
 needs another table add a named fragment to `_LINE_ITEM_JOINS` and reference it in `joins`

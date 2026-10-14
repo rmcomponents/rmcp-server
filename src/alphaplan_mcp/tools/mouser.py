@@ -34,8 +34,8 @@ def _date_part(timestamp: Optional[str]) -> str:
     except ValueError:
         return ""
 
-async def search_mouser_parts(
-    mpns: list[str],
+async def search_mouser_artikel(
+    artikel_nummern: list[str],
     caching: bool = True,
     cache_ttl_override_hours: float = settings.MOUSER_CACHE_TTL_HOURS,
     output_format: str = "json",
@@ -46,7 +46,7 @@ async def search_mouser_parts(
     Search Mouser for up to 25 manufacturer part numbers in a single call.
 
     Parameters:
-    - `mpns`: List of 1-25 exact manufacturer part numbers. Each MPN is looked up
+    - `artikel_nummern`: List of 1-25 exact manufacturer part numbers. Each MPN is looked up
       independently, in parallel, and cached individually in Redis.
     - `caching`: Whether to use caching (default True). When False, cache is neither read nor written.
     - `cache_ttl_override_hours`: Cache TTL in hours (default 168, must be positive).
@@ -73,19 +73,21 @@ async def search_mouser_parts(
     If output_format is "csv", returns a dict with keys:
     - `csv`: the CSV string with columns:
       MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
-      (`updated_at` = date of the cached or fresh Mouser data, 'YYYY-MM-DD')
+      (`updated_at` = date of the cached or fresh Mouser data, 'YYYY-MM-DD'; `error` is the
+      lookup error, or 'no parts found' / 'no price breaks' when Mouser has no part or no
+      prices for that MPN)
     - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
       excluding the checksum line. Preserve LF line endings and the final newline
       exactly. ***Verify before using the data***.
     """
     try:
-        if not mpns:
+        if not artikel_nummern:
             raise tool_error("INVALID_MPNS", f"Provide between 1 and {MAX_MPNS_PER_CALL} MPNs")
-        if len(mpns) > MAX_MPNS_PER_CALL:
+        if len(artikel_nummern) > MAX_MPNS_PER_CALL:
             raise tool_error(
                 "TOO_MANY_MPNS",
                 f"At most {MAX_MPNS_PER_CALL} MPNs are allowed per call",
-                {"max_mpns": MAX_MPNS_PER_CALL, "received": len(mpns)},
+                {"max_mpns": MAX_MPNS_PER_CALL, "received": len(artikel_nummern)},
             )
         if cache_ttl_override_hours <= 0:
             raise tool_error("INVALID_CACHE_TTL", "cache_ttl_override_hours must be positive")
@@ -127,6 +129,12 @@ async def search_mouser_parts(
                 else:
                     updated_at = _date_part(metadata.get("fetched_at"))
 
+                if not parts:
+                    row_error = "no parts found"
+                elif not unit_prices:
+                    row_error = "no price breaks"
+                else:
+                    row_error = ""
                 writer.writerow([
                     mpn,
                     min(quantity_breaks) if quantity_breaks else "",
@@ -134,7 +142,7 @@ async def search_mouser_parts(
                     min(unit_prices) if unit_prices else "",
                     max(unit_prices) if unit_prices else "",
                     updated_at,
-                    "",
+                    row_error,
                 ])
 
             return output.getvalue()
@@ -144,7 +152,7 @@ async def search_mouser_parts(
         # removed, while normalization is used only for deduplication and cache keys.
         results: Dict[str, Any] = {}
         normalized_to_requests: Dict[str, list[str]] = {}
-        for raw_mpn in mpns:
+        for raw_mpn in artikel_nummern:
             normalized = normalize_mpn(raw_mpn)
             if not normalized:
                 results[raw_mpn] = {
@@ -214,5 +222,5 @@ async def search_mouser_parts(
         return {"results": results}
     
     except ToolError as e:
-        logger.error("ToolError in search_mouser_parts: %s", e.message)
+        logger.error("ToolError in search_mouser_artikel: %s", e.message)
         return e.to_dict()

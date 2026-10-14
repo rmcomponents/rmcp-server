@@ -164,37 +164,60 @@ async def test_load_range(fake_redis):
 
 
 # ---------------------------------------------------------------------------
-# Regression: reported expires_at must reflect the real sliding idle TTL, not the
-# static absolute cap (Bug 2). After creation the set's TTL is max, but after the
-# first access `update_access` slides it to now + idle_ttl (bounded by the cap).
+# Lifetime policy: a set lives idle_ttl after its last use - creation counts as a use - and
+# never beyond max_ttl after creation. expires_at always reports that real expiry, and
+# reading a set never shortens its life.
 # ---------------------------------------------------------------------------
 @pytest.mark.asyncio
-async def test_expires_at_reflects_idle_ttl_after_access(fake_redis):
-    stale_idle_store = ResultSetStore(
+async def test_expires_at_is_idle_window_from_creation_and_access(fake_redis):
+    store = ResultSetStore(
         fake_redis,
         prefix=settings_for_tests.REDIS_KEY_PREFIX,
         idle_ttl=10,
         max_ttl=3600,
     )
-    summary = await stale_idle_store.store_result(
+    summary = await store.store_result(
         session_id="sess1",
         provenance=ResultProvenance(op="t"),
         table=_make_table(3),
     )
     now = datetime.now(timezone.utc)
 
-    # At creation the effective expiry is the absolute max.
-    meta0 = await stale_idle_store.get_metadata(summary.result_id)
-    assert meta0 is not None
-    assert (meta0.expires_at - now).total_seconds() >= 3550  # ~max_ttl ahead
-    assert meta0.expires_at == meta0.absolute_expires_at
+    # At creation: the idle window, reported and enforced (summary == stored metadata == key TTL).
+    assert 0 < (summary.expires_at - now).total_seconds() <= 10 + 2
+    meta0 = await store.get_metadata(summary.result_id)
+    assert meta0.expires_at == summary.expires_at
+    assert (meta0.absolute_expires_at - now).total_seconds() >= 3550  # cap stays 1 h
+    assert 0 < await fake_redis.ttl(store._meta_key(summary.result_id)) <= 10
+    assert 0 < await fake_redis.ttl(store._chunk_key(summary.result_id, 0)) <= 10
 
-    # After the first access, the keys are re-armed to the idle TTL window; the
-    # metadata now reports that real (much sooner) expiry rather than the 24h cap.
-    updated = await stale_idle_store.update_access(summary.result_id)
-    assert updated is not None
+    # After an access: re-armed to the idle window again (never shortened below it).
+    updated = await store.update_access(summary.result_id)
     distance = (updated.expires_at - datetime.now(timezone.utc)).total_seconds()
-    assert 0 < distance <= 10 + 2  # idle_ttl window (+clock slack)
+    assert 0 < distance <= 10 + 2
+
+
+@pytest.mark.asyncio
+async def test_stream_store_uses_idle_window_from_creation(fake_redis):
+    store = ResultSetStore(fake_redis, prefix=settings_for_tests.REDIS_KEY_PREFIX,
+                           idle_ttl=10, max_ttl=3600)
+
+    async def batches():
+        yield pa.RecordBatch.from_pylist([{"a": 1}])
+
+    summary = await store.store_result_stream(
+        session_id="sess1", provenance=ResultProvenance(op="t"), batches=batches())
+    assert 0 < (summary.expires_at - datetime.now(timezone.utc)).total_seconds() <= 10 + 2
+    assert 0 < await fake_redis.ttl(store._chunk_key(summary.result_id, 0)) <= 10
+
+
+@pytest.mark.asyncio
+async def test_idle_window_never_exceeds_absolute_cap(fake_redis):
+    store = ResultSetStore(fake_redis, prefix=settings_for_tests.REDIS_KEY_PREFIX,
+                           idle_ttl=7200, max_ttl=60)
+    summary = await store.store_result(
+        session_id="sess1", provenance=ResultProvenance(op="t"), table=_make_table(3))
+    assert (summary.expires_at - datetime.now(timezone.utc)).total_seconds() <= 60 + 2
 
 
 # Older/backfilled metadata without `expires_at` still deserializes and reports the cap.
@@ -211,7 +234,7 @@ async def test_update_access_returns_refreshed_metadata(fake_redis):
 
 @pytest.mark.asyncio
 async def test_store_stream_with_date_columns(fake_redis):
-    """date32 columns (list_line_items dates) store, carry min/max stats and load back."""
+    """date32 columns (list_beleg_positionen dates) store, carry min/max stats and load back."""
     import datetime as dt
     store = ResultSetStore(
         fake_redis,
@@ -240,3 +263,41 @@ async def test_store_stream_with_date_columns(fake_redis):
     assert str(info["BelegDatum"].max) == "2025-12-31"
     loaded = await store.load_table(summary.result_id)
     assert loaded.column("BestaetigtZum").to_pylist() == [None, dt.date(2026, 1, 5)]
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_with_schema_is_queryable(fake_redis):
+    """A result with 0 rows keeps its columns; filters and query_rows return 0 rows, not RESULT_NOT_FOUND."""
+    from alphaplan_mcp.query_engine import QueryEngine
+    from alphaplan_mcp.models import FilterClause, FilterGroup
+    store = ResultSetStore(fake_redis, prefix=settings_for_tests.REDIS_KEY_PREFIX)
+    schema = pa.schema([("BelegNummer", pa.string()), ("Menge", pa.float64())])
+
+    async def batches():
+        yield pa.RecordBatch.from_pylist([], schema=schema)
+
+    summary = await store.store_result_stream(
+        session_id="sess1", provenance=ResultProvenance(op="test", parameters={}), batches=batches())
+    assert summary.row_count == 0 and summary.column_count == 2
+
+    engine = QueryEngine(store, "sess1")
+    result = await engine.query_rows(summary.result_id)
+    assert result["total_rows"] == 0 and result["rows"] == []
+    flt = FilterGroup(clauses=[FilterClause(column="Menge", operator="gt", value=0)])
+    assert (await engine.count_rows(summary.result_id, filters=flt))["count"] == 0
+
+
+@pytest.mark.asyncio
+async def test_empty_stream_without_batches_is_queryable(fake_redis):
+    """Even a stream without any batch stores a readable (column-less) empty set."""
+    from alphaplan_mcp.query_engine import QueryEngine
+    store = ResultSetStore(fake_redis, prefix=settings_for_tests.REDIS_KEY_PREFIX)
+
+    async def batches():
+        return
+        yield  # pragma: no cover
+
+    summary = await store.store_result_stream(
+        session_id="sess1", provenance=ResultProvenance(op="test", parameters={}), batches=batches())
+    result = await QueryEngine(store, "sess1").query_rows(summary.result_id)
+    assert result["total_rows"] == 0

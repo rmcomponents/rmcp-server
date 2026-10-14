@@ -19,24 +19,24 @@ logger = logging.getLogger(__name__)
 # Fixed query – no user‑supplied table or column names.
 _CUSTOMER_QUERY = """
     SELECT
-        A.AdressNummer AS adress_nummer,
-        A.SuchName AS name_intern,
-        A.SuchName AS name,
-        A.Branche AS branche,
-        A.K_KundenTypNeu AS kunden_typ,
-        A.KundenTyp AS finale_klassifizierung,
-        A.K_Vertriebskanal AS vertriebskanal,
-        A.Kategorie AS potential_zu_kategorie,
-        A.Beruf AS umsatz_level_vorjahr,
-        A.K_VKID AS sachbearbeiter_innendienst,
-        A.K_VKAD AS sachbearbeiter_aussendienst,
-        A.K_AB AS sachbearbeiter_auftragsbearbeitung,
-        ZB.BedingungsText AS zahlungsbedingung,
-        W.WaehrungsKuerzel AS waehrung,
-        A.PreisStufe1 AS preisstufe_standard,
-        A.PreisStufe2 AS preisstufe_vorrangig,
-        VB.BedingungsText AS versandbedingung,
-        VA.Bezeichnung AS versandart,
+        NULLIF(LTRIM(RTRIM(A.AdressNummer)), '') AS adress_nummer,
+        NULLIF(LTRIM(RTRIM(A.SuchName)), '') AS name_intern,
+        NULLIF(LTRIM(RTRIM(A.SuchName)), '') AS name,
+        NULLIF(LTRIM(RTRIM(A.Branche)), '') AS branche,
+        NULLIF(LTRIM(RTRIM(A.K_KundenTypNeu)), '') AS kunden_typ,
+        NULLIF(LTRIM(RTRIM(A.KundenTyp)), '') AS finale_klassifizierung,
+        NULLIF(LTRIM(RTRIM(A.K_Vertriebskanal)), '') AS vertriebskanal,
+        NULLIF(LTRIM(RTRIM(A.Kategorie)), '') AS potential_zu_kategorie,
+        NULLIF(LTRIM(RTRIM(A.Beruf)), '') AS umsatz_level_vorjahr,
+        NULLIF(LTRIM(RTRIM(A.K_VKID)), '') AS sachbearbeiter_innendienst,
+        NULLIF(LTRIM(RTRIM(A.K_VKAD)), '') AS sachbearbeiter_aussendienst,
+        NULLIF(LTRIM(RTRIM(A.K_AB)), '') AS sachbearbeiter_auftragsbearbeitung,
+        NULLIF(LTRIM(RTRIM(ZB.BedingungsText)), '') AS zahlungsbedingung,
+        NULLIF(LTRIM(RTRIM(W.WaehrungsKuerzel)), '') AS waehrung,
+        NULLIF(LTRIM(RTRIM(A.PreisStufe1)), '') AS preisstufe_standard,
+        NULLIF(LTRIM(RTRIM(A.PreisStufe2)), '') AS preisstufe_vorrangig,
+        NULLIF(LTRIM(RTRIM(VB.BedingungsText)), '') AS versandbedingung,
+        NULLIF(LTRIM(RTRIM(VA.Bezeichnung)), '') AS versandart,
         LA.lieferadresse,
         COALESCE(LA.lieferadressen_anzahl, 0) AS lieferadressen_anzahl
     FROM
@@ -79,15 +79,15 @@ _CUSTOMER_QUERY = """
 """
 
 _CUSTOMER_COLUMN_DESCRIPTIONS = {
-    "adress_nummer": "Unique identifier for the customer address.",
+    "adress_nummer": "Address number (AdressNummer) of the customer or supplier, e.g. 'D010187'; the adress_nummer parameter of list_beleg_positionen.",
     "name_intern": "(Company Internal) customer name",
     "name": "customer name",
     "branche": "Industry sector of the customer.",
-    "kunden_typ": "?",
+    "kunden_typ": "Customer type(s) (K_KundenTypNeu), comma-separated, e.g. 'Entwicklung, Fertigung', 'EMS-Dienstleister', 'Distributor', 'Handel'.",
     "finale_klassifizierung": "Final customer classification (KundenTyp), e.g. 'Finale Klassifizierung - 1 - KeyAccount'.",
-    "vertriebskanal": "?",
-    "potential_zu_kategorie": "?",
-    "umsatz_level_vorjahr": "?",
+    "vertriebskanal": "Sales channel(s) (K_Vertriebskanal), comma-separated, e.g. 'EDI', 'Plattform Luminovo', 'Webshop', 'API'. Mostly empty.",
+    "potential_zu_kategorie": "Potential category letter (Kategorie): K (key account), A, B, C, D, 0; occasionally T or '?'.",
+    "umsatz_level_vorjahr": "Revenue level of the previous year (Beruf): K (key account), A, B, C, D, 0 (no revenue).",
     "sachbearbeiter_innendienst": "Unique name abbreviation of the employee responsible for internal sales",
     "sachbearbeiter_aussendienst": "Unique name abbreviation of the employee responsible for field sales",
     "sachbearbeiter_auftragsbearbeitung": "Unique name abbreviation of the employee responsible for order processing",
@@ -134,7 +134,7 @@ _WEBSHOP_PRICE_COLUMN_DESCRIPTIONS = {
 
 @dataclass(frozen=True)
 class LineItemColumn:
-    """One output column of `list_line_items`.
+    """One output column of `list_beleg_positionen`.
 
     `beleg_typen` restricts the column to the given BelegTyp codes (None = every type).
     `joins` names entries of `_LINE_ITEM_JOINS` the SQL expression depends on; they are added
@@ -150,14 +150,15 @@ class LineItemColumn:
     type_descriptions: Mapping[int, str] = dataclass_field(default_factory=dict)
     transform: Optional[Callable[[Any], Any]] = None
 
-    def applies_to(self, beleg_typ: int) -> bool:
-        return self.beleg_typen is None or beleg_typ in self.beleg_typen
+    def applies_to(self, beleg_typ_id: int) -> bool:
+        return self.beleg_typen is None or beleg_typ_id in self.beleg_typen
 
-    def description_for(self, beleg_typ: int) -> str:
-        return self.type_descriptions.get(beleg_typ, self.description)
+    def description_for(self, beleg_typ_id: int) -> str:
+        return self.type_descriptions.get(beleg_typ_id, self.description)
 
 
 # BelegTyp codes used for type-specific columns (see tools/documents.py DOCUMENT_TYPE_BELEG_TYP).
+_AN = 2
 _AB = 3
 _EA = 8
 _EB = 9
@@ -184,25 +185,34 @@ def _trimmed_text(expr: str) -> str:
 _LINE_ITEM_JOINS: Dict[str, str] = {
     "artikel": "LEFT JOIN ALPHAPLAN_EchtDaten.dbo.Artikel ART ON ART.ArtikelID = BP.ArtikelID",
     "lager_abbuchung": "LEFT JOIN ALPHAPLAN_EchtDaten.dbo.Lager LG ON LG.LagerID = BP.AbbuchungsLagerID",
+    # needs "artikel" first; a column listing both joins gets them in this order
+    "warengruppe": "LEFT JOIN ALPHAPLAN_EchtDaten.dbo.WarenGruppen WG ON WG.WarenGruppenID = ART.WarenGruppenID",
 }
+
+# Price per 1000 pieces in document currency, from the price-unit price; falls back to the
+# per-piece price when the price unit is missing. Not rounded - the columns round it.
+_PRO1000_EXPR = ("CASE WHEN BP.PEsProBE > 0"
+                 " THEN BP.PENettoPreis * BP.PEsProBE * COALESCE(NULLIF(BP.BEsProVE, 0), 1) * 1000"
+                 " ELSE BP.NettoPreisEinzel * 1000 END")
+_EUR_FACTOR = "B.KursFaktor / NULLIF(B.KursDivisor, 0)"
 
 # Column order here is the output column order. Add type-specific columns with `beleg_typen`
 # (e.g. frozenset({3}) for AB only); they are silently omitted for all other document types.
 LINE_ITEM_COLUMNS: Tuple[LineItemColumn, ...] = (
-    LineItemColumn("ArtikelNummer", "BP.ArtikelNummer",
+    LineItemColumn("ArtikelNummer", _trimmed_text("BP.ArtikelNummer"),
                    "Unique article/part number of the line item."),
     LineItemColumn("BelegNummer", "B.BelegNummer",
                    "Document number (prefix reflects the document type, e.g. 'ER250025')."),
     LineItemColumn("PositionsTyp", "BP.PositionsTyp",
                    "Line type: 0 = article line, 2 = text/comment line (no article, quantity and "
                    "price 0; the text is in ArtikelBezeichnung). Other values are rare."),
-    LineItemColumn("KundenNummer", "A.AdressNummer",
+    LineItemColumn("KundenNummer", _trimmed_text("A.AdressNummer"),
                    "Counterparty address number (AdressNummer)."),
-    LineItemColumn("KundeOderLieferant", "A.SuchName",
+    LineItemColumn("KundeOderLieferant", _trimmed_text("A.SuchName"),
                    "Counterparty name (customer for outgoing documents, supplier for purchasing documents)."),
-    LineItemColumn("KundeKlassifizierung", "A.KundenTyp",
+    LineItemColumn("KundeKlassifizierung", _trimmed_text("A.KundenTyp"),
                    "Counterparty classification code (KundenTyp)."),
-    LineItemColumn("KundeBranche", "A.Branche",
+    LineItemColumn("KundeBranche", _trimmed_text("A.Branche"),
                    "Counterparty industry sector (Branche)."),
     LineItemColumn("Menge", "BP.VEAnzahl",
                    "Quantity (VEAnzahl / packaging-unit count)."),
@@ -212,51 +222,61 @@ LINE_ITEM_COLUMNS: Tuple[LineItemColumn, ...] = (
                    type_descriptions={_EB: "Open quantity of the purchase order still to be "
                                            "received (NochZuUebernehmen), as in AlphaPlan F10."}),
     LineItemColumn("NettoPreisStueckEUR",
-                   "ROUND(BP.NettoPreisEinzelX * B.KursFaktor / NULLIF(B.KursDivisor, 0), 5)",
-                   "Net unit price per piece converted to EUR."),
-    LineItemColumn("NettoPreisStueck", "ROUND(BP.NettoPreisEinzel, 6)",
+                   f"ROUND(BP.NettoPreisEinzelX * {_EUR_FACTOR}, 8)",
+                   "Net unit price per piece converted to EUR with the document's exchange rate. "
+                   "For small prices prefer NettoPreisPro1000EUR (more significant digits)."),
+    LineItemColumn("NettoPreisStueck", "ROUND(BP.NettoPreisEinzel, 8)",
                    "Net unit price per piece in the document currency (BelegWaehrung), unconverted "
                    "(NettoPreisEinzel). Prefer NettoPreisPro1000 for exact comparisons."),
-    LineItemColumn("NettoPreisPro1000",
-                   "ROUND(CASE WHEN BP.PEsProBE > 0"
-                   " THEN BP.PENettoPreis * BP.PEsProBE * COALESCE(NULLIF(BP.BEsProVE, 0), 1) * 1000"
-                   " ELSE BP.NettoPreisEinzel * 1000 END, 4)",
+    LineItemColumn("NettoPreisPro1000", f"ROUND({_PRO1000_EXPR}, 6)",
                    "Net price per 1000 pieces in the document currency (BelegWaehrung), unconverted. "
                    "Calculated from the price-unit price (PENettoPreis) and the price unit, so it is "
-                   "per 1000 regardless of whether the line is priced '/1000', '/100' or per piece."),
+                   "per 1000 regardless of whether the line is priced '/1000', '/100' or per piece ('x')."),
+    LineItemColumn("NettoPreisPro1000EUR", f"ROUND({_PRO1000_EXPR} * {_EUR_FACTOR}, 6)",
+                   "Net price per 1000 pieces converted to EUR with the document's exchange rate "
+                   "(NettoPreisPro1000 x BelegKursFaktor, unrounded factor). Best column for comparing "
+                   "purchase prices across currencies."),
     LineItemColumn("Preiseinheit", _trimmed_text("BP.PEText"),
-                   "Price unit of the line as shown in AlphaPlan (PEText), usually '/1000', rarely '/100'."),
+                   "Price unit of the line as shown in AlphaPlan (PEText): usually '/1000', rarely "
+                   "'/100'; 'x' means priced per piece."),
     LineItemColumn("BelegDatum", _as_date("B.Datum"),
                    "Date of the document (B.Datum, date only). One of the date fields the range filter matches on."),
     LineItemColumn("IstArchiviert", "B.IstArchiviert",
                    "Whether the document is archived (1 = archived, 0 = not archived)."),
     LineItemColumn("LieferDatum", _as_date("BP.LieferDatum"),
-                   "Delivery date (LieferDatum). The 1900-01-01 'no date' placeholder is returned as null.",
+                   "Delivery date (LieferDatum). The 1900-01-01 'no date' placeholder is returned as null."
+                   " 7777-01-01 and 9999-xx-xx are deliberate team placeholders, passed through as-is.",
                    beleg_typen=_ALL_EXCEPT_EB),
     LineItemColumn("LieferDatumBestaetigt", _as_date("BP.AnlieferungsDatumBestaetigt"),
                    "Confirmed delivery date (AnlieferungsDatumBestaetigt); purchasing-side field, "
-                   "usually empty for sales documents. The 1900-01-01 placeholder is returned as null.",
+                   "usually empty for sales documents. The 1900-01-01 placeholder is returned as null."
+                   " 7777-01-01 and 9999-xx-xx are deliberate team placeholders, passed through as-is.",
                    beleg_typen=_ALL_EXCEPT_EB),
     LineItemColumn("OriginalDatum", _as_date("BP.AnlieferungsDatumWunsch"),
                    "Original/requested delivery date (AnlieferungsDatumWunsch). The 1900-01-01 "
-                   "placeholder is returned as null.",
+                   "placeholder is returned as null."
+                   " 7777-01-01 and 9999-xx-xx are deliberate team placeholders, passed through as-is.",
                    beleg_typen=_ALL_EXCEPT_AB_EB),
     LineItemColumn("RequestedDate", _as_date("BP.LieferDatum"),
                    "Requested delivery date of the purchase order line (LieferDatum). "
-                   "The 1900-01-01 'no date' placeholder is returned as null.",
+                   "The 1900-01-01 'no date' placeholder is returned as null."
+                   " 7777-01-01 and 9999-xx-xx are deliberate team placeholders, passed through as-is.",
                    beleg_typen=_ONLY_EB),
     LineItemColumn("BestaetigtZum", _as_date("BP.AnlieferungsDatumBestaetigt"),
                    "Delivery date confirmed by the supplier (AnlieferungsDatumBestaetigt), as in "
-                   "AlphaPlan F10. Often empty; the 1900-01-01 placeholder is returned as null.",
+                   "AlphaPlan F10. Often empty; the 1900-01-01 placeholder is returned as null."
+                   " 7777-01-01 and 9999-xx-xx are deliberate team placeholders, passed through as-is.",
                    beleg_typen=_ONLY_EB),
     LineItemColumn("KDWunsch", _as_date("BP.AnlieferungsDatumWunsch"),
                    "Customer's requested delivery date (Kundenwunschtermin, AnlieferungsDatumWunsch). "
                    "A 31.12. date usually marks a call-off collective position, not a real date; "
-                   "the 1900-01-01 placeholder is returned as null.",
+                   "the 1900-01-01 placeholder is returned as null."
+                   " 7777-01-01 and 9999-xx-xx are deliberate team placeholders, passed through as-is.",
                    beleg_typen=_ONLY_AB),
-    LineItemColumn("BelegKursFaktor", "ROUND(B.KursFaktor / NULLIF(B.KursDivisor, 0), 5)",
-                   "Exchange-rate factor of the document (KursFaktor / KursDivisor)."),
-    LineItemColumn("BelegWaehrung", "W.WaehrungsKuerzel",
+    LineItemColumn("BelegKursFaktor", f"ROUND({_EUR_FACTOR}, 10)",
+                   "Exchange-rate factor of the document (KursFaktor / KursDivisor): document "
+                   "currency x factor = EUR."),
+    LineItemColumn("BelegWaehrung", _trimmed_text("W.WaehrungsKuerzel"),
                    "ISO currency code of the document (e.g. JPY)."),
     LineItemColumn("Titel", _trimmed_text("B.BelegTitel"),
                    "Document title (BelegTitel). For purchasing documents usually an order type, "
@@ -264,7 +284,10 @@ LINE_ITEM_COLUMNS: Tuple[LineItemColumn, ...] = (
                    type_descriptions={_EA: "Document title (BelegTitel). For requests to HolyStone / "
                                            "Walsin this holds the end customer, which separates "
                                            "project-specific from general purchase prices; for other "
-                                           "suppliers often a price-list or request name."}),
+                                           "suppliers often a price-list or request name.",
+                                      _AN: "Document title (BelegTitel): the end customer of the quote.",
+                                      _AB: "Document title (BelegTitel), e.g. 'EDI' for orders received "
+                                           "via EDI; often empty."}),
     LineItemColumn("Kommission", _trimmed_text("B.Kommission"),
                    "Commission / reference of the document (Kommission), free text."),
     LineItemColumn("ZusatzText1", "BP.ZusatzText1",
@@ -272,21 +295,36 @@ LINE_ITEM_COLUMNS: Tuple[LineItemColumn, ...] = (
                    "whose meaning depends on the document type and the person entering it; for CCTC "
                    "supplier lines it holds the landed cost (e.g. 'Landed Cost Price: 13,47 $ / "
                    "1000'). May contain unrelated notes or garbage - do not assume a fixed format.",
+                   type_descriptions={_AN: "Quoted lead time of the quote line (ZusatzText1), plain "
+                                           "text; free text without a fixed format."},
                    transform=rtf_to_text),
     LineItemColumn("ZusatzText2", "BP.ZusatzText2",
                    "Additional text 2 of the line as plain text (RTF formatting removed). Free text "
                    "with no fixed format; may contain unrelated notes or garbage.",
+                   type_descriptions={_AN: "Quote status (ZusatzText2), e.g. 'nominiert', 'zu teuer', "
+                                           "'second source (keine Beauftragung)', 'kein Feedback', "
+                                           "'kein FUP', 'technisch passend', 'technisch nicht passend'."},
                    transform=rtf_to_text),
     LineItemColumn("ArtikelBezeichnung", "BP.ArtikelBezeichnung",
                    "Line description as plain text (RTF formatting removed). For text/comment lines "
                    "(PositionsTyp 2) this is the comment itself; for article lines the article "
                    "description, sometimes the MPN for imported lines.",
                    transform=rtf_to_text),
+    LineItemColumn("WarenGruppe", _trimmed_text("WG.Bezeichnung"),
+                   "Article group of the line's article (WarenGruppen.Bezeichnung). Null for lines "
+                   "without an article.", joins=("artikel", "warengruppe")),
+    LineItemColumn("WarenGruppenNummer", _trimmed_text("WG.WarenGruppenNummer"),
+                   "Article group number. Groups starting with 'RMC_' are internal non-part items "
+                   "(freight, packaging, services, catalogues, giveaways ...); they are left out of "
+                   "price_summary.", joins=("artikel", "warengruppe")),
     LineItemColumn("IhrAuftrag", _trimmed_text("B.IhrAuftrag"),
                    "Customer's purchase order number (IhrAuftrag). Together with IhrAuftragPos the "
-                   "key for matching against a customer backlog.", beleg_typen=_ONLY_AB),
+                   "key for matching real orders against a customer backlog. Forecast lines "
+                   "(AuftragsTyp 'ForeCast') all carry 'Forecast' here - match those via "
+                   "KundenArtNr + KDWunsch.", beleg_typen=_ONLY_AB),
     LineItemColumn("IhrAuftragPos", _trimmed_text("BP.PositionsText"),
-                   "Customer's purchase order line/position (PositionsText, e.g. '000010').",
+                   "Customer's purchase order line/position (PositionsText, e.g. '000010'); 'FC' "
+                   "on forecast lines.",
                    beleg_typen=_ONLY_AB),
     LineItemColumn("KundenArtNr", _trimmed_text("BP.KundenArtikelNummer"),
                    "Customer part number (CPN, KundenArtikelNummer).", beleg_typen=_ONLY_AB),
@@ -305,11 +343,11 @@ LINE_ITEM_COLUMNS: Tuple[LineItemColumn, ...] = (
 
 
 def line_item_columns_for(
-    beleg_typ: int,
+    beleg_typ_id: int,
     columns: Sequence[LineItemColumn] = LINE_ITEM_COLUMNS,
 ) -> List[LineItemColumn]:
-    """Return the columns `list_line_items` emits for one BelegTyp, in output order."""
-    return [col for col in columns if col.applies_to(beleg_typ)]
+    """Return the columns `list_beleg_positionen` emits for one BelegTyp, in output order."""
+    return [col for col in columns if col.applies_to(beleg_typ_id)]
 
 
 @dataclass(frozen=True)
@@ -320,14 +358,14 @@ class LineItemQuery:
 
 
 def build_line_items_query(
-    beleg_typ: int,
+    beleg_typ_id: int,
     *,
     artikel_nummer: Optional[str] = None,
-    kunden_nummer: Optional[str] = None,
+    adress_nummer: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     include_archived: bool = False,
-    nur_offen: bool = False,
+    open_only: bool = False,
     include_text_lines: bool = True,
     columns: Sequence[LineItemColumn] = LINE_ITEM_COLUMNS,
     joins: Mapping[str, str] = _LINE_ITEM_JOINS,
@@ -335,15 +373,15 @@ def build_line_items_query(
     """Build the line-item SQL for one BelegTyp with its parameters and selected columns.
 
     Only fixed, code-defined fragments are interpolated; every user value is a `?` parameter.
-    Filters are ANDed: `artikel_nummer` (exact), `kunden_nummer` (exact AdressNummer of the
+    Filters are ANDed: `artikel_nummer` (exact), `adress_nummer` (exact AdressNummer of the
     counterparty), the date range (a row matches when ANY of the four date fields falls on a day
-    from `date_from` through `date_to`, whole days inclusive; both bounds or neither), `nur_offen` (NochZuUebernehmen > 0), the
+    from `date_from` through `date_to`, whole days inclusive; both bounds or neither), `open_only` (NochZuUebernehmen > 0), the
     archive flag and, unless `include_text_lines`, only article lines (PositionsTyp = 0).
     """
     if (date_from is None) != (date_to is None):
         raise ValueError("date_from and date_to must be given together")
 
-    selected = line_item_columns_for(beleg_typ, columns)
+    selected = line_item_columns_for(beleg_typ_id, columns)
     select_list = ",\n                    ".join(f"{col.sql} AS {col.name}" for col in selected)
 
     join_names: List[str] = []
@@ -354,7 +392,7 @@ def build_line_items_query(
     extra_joins = "".join(f"\n                    {joins[name]}" for name in join_names)
 
     predicates: List[str] = []
-    params: List[Any] = [beleg_typ]
+    params: List[Any] = [beleg_typ_id]
     if not include_text_lines:
         predicates.append("BP.PositionsTyp = 0")
     if not include_archived:
@@ -362,10 +400,10 @@ def build_line_items_query(
     if artikel_nummer is not None:
         predicates.append("BP.ArtikelNummer = ?")
         params.append(artikel_nummer)
-    if kunden_nummer is not None:
+    if adress_nummer is not None:
         predicates.append("A.AdressNummer = ?")
-        params.append(kunden_nummer)
-    if nur_offen:
+        params.append(adress_nummer)
+    if open_only:
         predicates.append("BP.NochZuUebernehmen > 0")
     if date_from is not None:
         # Whole days: the columns carry a time of day (B.Datum e.g. 21:45), so the upper bound
@@ -464,11 +502,21 @@ async def fetch_customers_stream(
             cursor.execute(_CUSTOMER_QUERY, (pattern,))
 
             columns = [col[0] for col in cursor.description]
+            schema = _arrow_schema(cursor.description, _CUSTOMER_COLUMN_DESCRIPTIONS)
+            fetched_any = False
             while True:
                 rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
                 if not rows:
+                    if not fetched_any and schema is not None:
+                        # no matches: an empty batch keeps the columns of the stored result set
+                        queue.put_nowait(pa.RecordBatch.from_pylist([], schema=schema))
                     break
+                fetched_any = True
                 dicts = [dict(zip(columns, row)) for row in rows]
+                if schema is not None:
+                    # declared types: an all-null column (e.g. lieferadresse) stays a string
+                    queue.put_nowait(pa.RecordBatch.from_pylist(dicts, schema=schema))
+                    continue
                 batch = pa.RecordBatch.from_pylist(dicts)
                 # Attach column descriptions to the schema metadata
                 new_fields = []
@@ -577,19 +625,19 @@ async def fetch_webshop_prices_stream(
 
 
 async def fetch_line_items_stream(
-    beleg_typ: int,
+    beleg_typ_id: int,
     artikel_nummer: Optional[str] = None,
-    kunden_nummer: Optional[str] = None,
+    adress_nummer: Optional[str] = None,
     date_from: Optional[str] = None,
     date_to: Optional[str] = None,
     include_archived: bool = False,
-    nur_offen: bool = False,
+    open_only: bool = False,
     include_text_lines: bool = True,
 ) -> AsyncGenerator[pa.RecordBatch, None]:
     """
     Asynchronously yield line items of a single BelegTyp as Arrow record batches.
 
-    Rows come from documents of one BelegTyp (resolved from the tool's `document_type` code,
+    Rows come from documents of one BelegTyp (resolved from the tool's `beleg_typ` code,
     e.g. 'AR' -> 5, 'EB' -> 9, 'ER' -> 10). The selected columns depend on the BelegTyp (see
     `LINE_ITEM_COLUMNS`); filters are described in `build_line_items_query`. Column
     `transform`s (e.g. RTF -> plain text) are applied before a batch is built.
@@ -599,16 +647,16 @@ async def fetch_line_items_stream(
 
     queue: Queue[Optional[pa.RecordBatch]] = asyncio.Queue()
     query = build_line_items_query(
-        beleg_typ,
+        beleg_typ_id,
         artikel_nummer=artikel_nummer,
-        kunden_nummer=kunden_nummer,
+        adress_nummer=adress_nummer,
         date_from=date_from,
         date_to=date_to,
         include_archived=include_archived,
-        nur_offen=nur_offen,
+        open_only=open_only,
         include_text_lines=include_text_lines,
     )
-    descriptions = {col.name: col.description_for(beleg_typ) for col in query.columns}
+    descriptions = {col.name: col.description_for(beleg_typ_id) for col in query.columns}
     transforms = [(col.name, col.transform) for col in query.columns if col.transform]
 
     def _fetch():
@@ -621,10 +669,16 @@ async def fetch_line_items_stream(
 
             columns = [col[0] for col in cursor.description]
             schema = _arrow_schema(cursor.description, descriptions)
+            fetched_any = False
             while True:
                 rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
                 if not rows:
+                    if not fetched_any and schema is not None:
+                        # no matches: an empty batch keeps the schema, so the stored empty
+                        # result set still has its columns for follow-up queries
+                        queue.put_nowait(pa.RecordBatch.from_pylist([], schema=schema))
                     break
+                fetched_any = True
                 dicts = [dict(zip(columns, row)) for row in rows]
                 for name, transform in transforms:
                     for d in dicts:

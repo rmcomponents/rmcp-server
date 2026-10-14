@@ -19,7 +19,7 @@ Design everything below so that **chaining is transparent**: a derived set must 
 - Add `store_result: bool = false` to `group_by`, `aggregate`, `distinct_values`, and `histogram` (matching the existing `query_rows` / `list_rows` behavior). **Do not** introduce separate "store" tools — one flag per tool keeps the surface uniform.
 - When `store_result = false`: current behavior, unchanged (return the computed rows/summary inline as today).
 - When `store_result = true`:
-  - Persist the computed table as a new result set with a fresh `result_id` (same Redis lifecycle/TTL as `list_parts`).
+  - Persist the computed table as a new result set with a fresh `result_id` (same Redis lifecycle/TTL as `list_artikel`).
   - Return the **`get_result_info`-style summary of the new set**, not the rows. Rows are fetched on demand via `list_rows` / `query_rows`. This preserves the "no rows into the model context" contract.
 - Add an optional `result_label: str | null = null` so the caller can name the set (free-text; store verbatim in metadata; never used as a key).
 
@@ -311,14 +311,14 @@ may be skewed — the mean alone is misleading on the revenue columns (mean ≈ 
 - `right_duplicates="first"` keeps the lowest-ordinal right row per normalized key (row-count and sums preserved) and records `deduplicated_rows` in both the report and provenance — a safe alternative to disabling validation.
 - The report's `normalization.collisions` and `data_quality.sample` entries carry `{normalized, raw, side, caused_by_normalization, steps_applied}`; use `normalize_preview(values)` to confirm which normalization step produced a collision, and `dry_run=true` to obtain the full report without materializing a result set.
 
-## 10. Tool: `list_parts`
+## 10. Tool: `list_artikel`
 
 - `sample_n` (optional int): If provided, returns a random sample of up to `sample_n` rows, drawn **after** all other filters (`positive_filter_term`, `negative_filter_term`, `match_code`) are applied, i.e. a sample of the filtered population. If omitted, all matching rows are returned.
 - `negative_filter_term` defaults to `'TCC%'`, which **silently excludes all `TCC%` articles (tens of thousands of rows)**. When the default is applied, the returned summary carries a prominent `warning` field. Pass `negative_filter_term=None` for the full article master.
 
-## 11. Tool: `search_mouser_parts`
+## 11. Tool: `search_mouser_artikel`
 
-- `mpns` (list of str, required): 1–5 manufacturer part numbers. Each MPN is looked up independently, in parallel, and cached individually in Redis. Duplicates (after normalization) are queried only once.
+- `artikel_nummern` (list of str, required): 1–5 manufacturer part numbers. Each MPN is looked up independently, in parallel, and cached individually in Redis. Duplicates (after normalization) are queried only once.
 - `caching` (bool, default `true`): when `false`, the cache is neither read nor written.
 - `cache_ttl_override_hours` (float, default 168, must be positive).
 - Returns `{"results": {<normalized MPN>: {"part_count", "parts", "metadata"}}}`. Per-MPN lookup failures (e.g. `MOUSER_TIMEOUT`) are returned as an error object in that MPN's entry only — they do not fail the whole call. Call-level validation errors (`INVALID_MPNS`, `TOO_MANY_MPNS`, `INVALID_CACHE_TTL`) are returned as a top-level error object.

@@ -72,6 +72,7 @@ class ResultSetStore:
         result_id = f"rs_{uuid.uuid4()}"
         now = datetime.now(timezone.utc)
         absolute_expires_at = now + timedelta(seconds=self.max_ttl)
+        expires_at = now + timedelta(seconds=self._initial_ttl())
 
         # split into chunks
         total_rows = table.num_rows
@@ -116,7 +117,7 @@ class ResultSetStore:
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
-            expires_at=absolute_expires_at,
+            expires_at=expires_at,
             row_count=total_rows,
             column_count=len(table.schema),
             uncompressed_size_bytes=table.nbytes,
@@ -138,11 +139,11 @@ class ResultSetStore:
             chunk_key = self._chunk_key(result_id, idx)
             serialized = serialize_table(chunk)
             total_stored += len(serialized)
-            pipe.set(chunk_key, serialized, ex=self.max_ttl)
+            pipe.set(chunk_key, serialized, ex=self._initial_ttl())
 
         meta.stored_size_bytes = total_stored
         meta_key = self._meta_key(result_id)
-        pipe.set(meta_key, serialize_metadata(meta), ex=self.max_ttl)
+        pipe.set(meta_key, serialize_metadata(meta), ex=self._initial_ttl())
         pipe.sadd(self._session_key(session_id), result_id)
         pipe.expire(self._session_key(session_id), self.max_ttl)
 
@@ -165,7 +166,7 @@ class ResultSetStore:
             column_count=len(table.schema),
             stored_size_bytes=total_stored,
             created_at=now,
-            expires_at=absolute_expires_at,
+            expires_at=expires_at,
             columns=columns_info,
         )
 
@@ -184,6 +185,7 @@ class ResultSetStore:
         result_id = f"rs_{uuid.uuid4()}"
         now = datetime.now(timezone.utc)
         absolute_expires_at = now + timedelta(seconds=self.max_ttl)
+        expires_at = now + timedelta(seconds=self._initial_ttl())
 
         # Temporary TTL for chunks during ingestion (5 minutes)
         staging_ttl = 300
@@ -274,11 +276,10 @@ class ResultSetStore:
                         columns_info.append(c)
             chunk_count = chunk_index
 
+        empty_chunk = None
         if chunk_count == 0:
-            chunk_key = self._chunk_key(result_id, 0)
-            serialized = serialize_table(pa.Table.from_batches([], schema=schema))
-            total_stored += len(serialized)
-            pipe.set(chunk_key, serialized, ex=self.max_ttl)
+            empty_chunk = serialize_table(pa.Table.from_batches([], schema=schema))
+            total_stored += len(empty_chunk)
             chunk_count = 1
 
         meta = ResultSetMetadata(
@@ -292,7 +293,7 @@ class ResultSetStore:
             created_at=now,
             last_accessed_at=now,
             absolute_expires_at=absolute_expires_at,
-            expires_at=absolute_expires_at,
+            expires_at=expires_at,
             row_count=total_rows,
             column_count=len(schema),
             uncompressed_size_bytes=total_uncompressed,
@@ -303,9 +304,12 @@ class ResultSetStore:
 
         # Promote chunk TTLs (if any) and write metadata
         pipe = self.redis.pipeline()
+        if empty_chunk is not None:
+            # an empty set still gets one (empty) chunk carrying its schema
+            pipe.set(self._chunk_key(result_id, 0), empty_chunk, ex=self._initial_ttl())
         for idx in range(chunk_count):
-            pipe.expire(self._chunk_key(result_id, idx), self.max_ttl)
-        pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=self.max_ttl)
+            pipe.expire(self._chunk_key(result_id, idx), self._initial_ttl())
+        pipe.set(self._meta_key(result_id), serialize_metadata(meta), ex=self._initial_ttl())
         pipe.sadd(self._session_key(session_id), result_id)
         pipe.expire(self._session_key(session_id), self.max_ttl)
         await pipe.execute()
@@ -327,9 +331,17 @@ class ResultSetStore:
             column_count=len(schema),
             stored_size_bytes=total_stored,
             created_at=now,
-            expires_at=absolute_expires_at,
+            expires_at=expires_at,
             columns=columns_info,
         )
+
+    def _initial_ttl(self) -> int:
+        """Lifetime of a new set: the idle window, never beyond the absolute maximum.
+
+        Same rule as `update_access`: a set lives `idle_ttl` after its last use (creation counts
+        as a use), capped by `max_ttl` after creation. Reading a set never shortens its life.
+        """
+        return max(1, min(self.idle_ttl, self.max_ttl))
 
     # ---------- retrieval ----------
     async def get_metadata(self, result_id: str) -> Optional[ResultSetMetadata]:

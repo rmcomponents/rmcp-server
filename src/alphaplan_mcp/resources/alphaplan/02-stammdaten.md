@@ -13,7 +13,7 @@
 |---|---|
 | `ArtikelID` / `ArtikelNummer` (nvarchar 30) | PK / MPN |
 | `Bezeichnung` (70) / `LangText` (max) | Kurz-/Langtext, LangText ist RTF-Kandidat |
-| `MatchCode` (60) | Suchfeld, vom MCP-Tool `list_parts` per `LIKE '%…%'` gefiltert |
+| `MatchCode` (60) | Suchfeld, vom MCP-Tool `list_artikel` per `LIKE '%…%'` gefiltert |
 | `K_VPE` (int) | Verpackungseinheit; kann 0/NULL sein → `NULLIF(K_VPE, 0)` |
 | `Feld01..Feld04` | Freifelder. **`Feld02` = Lieferfähigkeits-Status**, siehe unten |
 | `HauptLieferantenAdressenID`, `HerstellerAdressenID`, `HerstellerNummer` | Bezugsquellen |
@@ -36,14 +36,14 @@ wie Artikel). Ein paar tausend archiviert, ~1.000 ohne `K_VPE`, ~130 ohne Hauptl
 **ein einziger** mit gepflegtem `DatumProduktabkuendigung` – die EOL-Datumsfelder sind
 faktisch leer, `IstAuslaufArtikel` ist der einzige brauchbare EOL-Indikator.
 
-> **`list_parts` filtert per Default `ArtikelNummer NOT LIKE 'TCC%'` und entfernt damit
+> **`list_artikel` filtert per Default `ArtikelNummer NOT LIKE 'TCC%'` und entfernt damit
 > rund 92 % des Stamms.** `TCC`-Artikel sind neu angelegte
 > Teile, die noch nicht vertrieben werden; der Default ist für Vertriebs- und
 > Beschaffungsfragen also richtig. Für Fragen zum Katalogumfang, zu Neuanlagen oder zur
 > Stammdatenqualität muss man `negative_filter_term=None` setzen – sonst betrachtet man
 > ~8 % des Bestands und hält sie für das Ganze.
 
-> **Die `TCC`-Zahlen oben sind Vorfilter-Zahlen.** `list_parts` wendet zusätzlich zum
+> **Die `TCC`-Zahlen oben sind Vorfilter-Zahlen.** `list_artikel` wendet zusätzlich zum
 > `TCC%`-Ausschluss immer auch `IstArchiviert = 0` an: Archivierte Artikel (ein paar
 > tausend von rund 300.000, also knapp 2 %) sind per Default **nicht** im Ergebnis.
 > Die tatsächliche Ausgabe des Tools liegt daher unter der oben genannten Zahl.
@@ -86,7 +86,7 @@ Repräsentation der Verpackungseinheit neben `Artikel.K_VPE`.
 | `gelb` | ~7 |
 | Sonstiges | ~14 |
 
-Die Tool-Dokumentation von `list_parts` nennt `rot`/`gelb`/`gruen` – real steht dort
+Die Tool-Dokumentation von `list_artikel` nennt `rot`/`gelb`/`gruen` – real steht dort
 **`grün` mit Umlaut**, ein Filter auf `gruen` trifft nichts. `gelb` existiert praktisch
 nicht; die englischen Werte `Active`/`NRND` bilden eine zweite, parallele
 Vokabelwelt. Unter Sonstiges stehen versehentlich eingetragene Preise

@@ -3,7 +3,7 @@
 # These functions are the single loading/listing implementation. They are
 # exposed through the existing FastMCP resource API (resources/list,
 # resources/read) AND through the compatibility tools in server.py
-# (list_documents / read_document / search_documents). Nothing here is tool
+# (list_documentation / read_documentation / search_documentation). Nothing here is tool
 # or resource specific: FastMCP's own resource handlers already delegate to
 # the same public backend (server.list_resources / server.read_resource), so
 # listing, reading, filtering and version resolution stay consistent between
@@ -103,7 +103,7 @@ async def search_document_content(
     replacement resource interface. It scans metadata and content, ranks by
     substring hits (title matches weight higher), and returns compact results
     (URI, title, excerpt, relevance) so the model can decide whether to call
-    read_document(uri).
+    read_documentation(uri).
     """
     query_lower = query.strip().lower()
     if not query_lower:

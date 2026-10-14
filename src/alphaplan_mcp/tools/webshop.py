@@ -16,8 +16,8 @@ from ..errors import ToolError
 logger = logging.getLogger(__name__)
 
 
-async def get_webshop_prices(
-    mpns: List[str],
+async def get_webshop_preise(
+    artikel_nummern: List[str],
     output_format: str = "csv",
     ctx: Context = None,
 ) -> Any:
@@ -25,7 +25,7 @@ async def get_webshop_prices(
     Retrieve webshop prices for up to 25 manufacturer part numbers as CSV.
 
     Parameters:
-    - `mpns`: List of 1-25 exact manufacturer part numbers
+    - `artikel_nummern`: List of 1-25 exact manufacturer part numbers
       (e.g., ["CRCW040210K0FKED", "RC0603FR-0710KL"]).
     - `output_format`: Output format, either "csv" or "json". Defaults to "csv".
 
@@ -38,22 +38,23 @@ async def get_webshop_prices(
       excluding the checksum line. Preserve LF line endings and the final newline
       exactly. Verify before using the data.
 
-    One row per MPN is returned in the same order as input.
-    If no prices are found, the CSV contains only the header line.
+    One row per MPN is returned in the same order as input (duplicates once). An MPN without
+    webshop prices still gets a row, with empty price columns and `error` = 'no webshop prices
+    found'.
     """
-    if not mpns:
+    if not artikel_nummern:
         raise ToolError("INVALID_MPNS", "At least one MPN is required. Provide 1 to 25 MPNs.")
-    if len(mpns) > 25:
+    if len(artikel_nummern) > 25:
         raise ToolError("TOO_MANY_MPNS", "At most 25 MPNs can be queried in a single call.")
-    if any(not mpn or not mpn.strip() for mpn in mpns):
+    if any(not mpn or not mpn.strip() for mpn in artikel_nummern):
         raise ToolError("INVALID_MPNS", "MPN list must not contain empty values.")
     if output_format not in ("csv", "json"):
         raise ToolError("INVALID_FORMAT", "output_format must be 'csv' or 'json'")
 
-    normalized_mpns = [mpn.strip() for mpn in mpns]
+    normalized_mpns = [mpn.strip() for mpn in artikel_nummern]
 
     if ctx:
-        logger.info("get_webshop_prices called for mpns=%s", normalized_mpns)
+        logger.info("get_webshop_preise called for artikel_nummern=%s", normalized_mpns)
 
     mpn_order = list(dict.fromkeys(normalized_mpns))
 
@@ -88,6 +89,11 @@ async def get_webshop_prices(
         for mpn in mpn_order:
             agg = aggregates[mpn]
             if not agg["breakpoints"] and not agg["unit_prices"]:
+                rows.append({
+                    "MPN": mpn, "breakpoint_min": None, "breakpoint_max": None,
+                    "unit_price_min": None, "unit_price_max": None, "updated_at": None,
+                    "error": "no webshop prices found",
+                })
                 continue
             rows.append({
                 "MPN": mpn,
@@ -111,7 +117,7 @@ async def get_webshop_prices(
     except ToolError:
         raise
     except Exception as e:
-        logger.exception("get_webshop_prices failed for mpns=%s", normalized_mpns)
+        logger.exception("get_webshop_preise failed for artikel_nummern=%s", normalized_mpns)
         raise ToolError("INTERNAL_ERROR", f"An unexpected error occurred: {e}")
 
 def _date_part(value: Any) -> Optional[date]:

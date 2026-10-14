@@ -84,12 +84,12 @@ Ohne Bestand und damit ungenutzt: 7 Wertgutschriften, 11 Lieferantenmahnungen,
 15 Vorabrechnungen, 20 Vermietrechnungen, 22 Lieferantenwertgutschriften,
 24 Qualitätssicherungen, 26 EK-Vorabrechnungen. Dazu eine Dummy-Zeile mit `BelegTyp = 0`.
 
-Das MCP-Tool `list_line_items` bildet die Kürzel korrekt ab: `document_type='AA'` liefert
+Das MCP-Tool `list_beleg_positionen` bildet die Kürzel korrekt ab: `beleg_typ='AA'` liefert
 Verkaufsanfragen (Typ 1), `'EA'` Lieferantenanfragen (Typ 8).
 
 **Archivierung ist typabhängig und kein Löschkennzeichen.** Bei AB/AL/AV/EB ist Archivierung
 der Normalzustand nach Abwicklung – `IstArchiviert = 0` blendet dort 95–99,9 % der Daten aus.
-`list_line_items` schließt archivierte Belege standardmäßig aus (auch bei AB); für
+`list_beleg_positionen` schließt archivierte Belege standardmäßig aus (auch bei AB); für
 Historienfragen `include_archived=true` setzen.
 Bei AR/EA/AS ist es umgekehrt. Historische Auswertungen daher **mit** archivierten Belegen.
 
@@ -223,7 +223,7 @@ auf `Belege` – diese Felder existieren nur in der ETL-Staging-DB. Kundenname u
 | 10 | unbekannt | eine einzige Zeile (BelegTyp 19) |
 
 Für Mengen- und Wertsummen also `PositionsTyp = 0` filtern, sonst laufen Textzeilen mit.
-`list_line_items` liefert Textzeilen standardmäßig mit (Spalten `PositionsTyp`,
+`list_beleg_positionen` liefert Textzeilen standardmäßig mit (Spalten `PositionsTyp`,
 `ArtikelBezeichnung`); `include_text_lines=false` blendet sie aus.
 
 ### Mengen und Preiseinheit
@@ -272,11 +272,11 @@ ein bestätigter Termin auf einem Auftrag ebenso wenig. `LieferDatum`
 ist das einzige durchgängig gefüllte Feld – außer bei Angeboten (28 %) und
 Lieferantenanfragen (43 %), wo naturgemäß noch kein Termin feststeht.
 
-> Das MCP-Tool `list_line_items` filtert über alle vier Felder gleichzeitig (ODER-verknüpft).
+> Das MCP-Tool `list_beleg_positionen` filtert über alle vier Felder gleichzeitig (ODER-verknüpft).
 > Der Filter verhält sich damit je Belegtyp unterschiedlich: bei EB greift er praktisch über
 > `LieferDatum` und `AnlieferungsDatumBestaetigt`, bei AB über `LieferDatum` und
-> `AnlieferungsDatumWunsch`. Mit `nur_offen=true` (nur AA/AB/EB) ist der Datumsfilter
-> optional – so liefert z. B. `document_type='AB'`, `kunden_nummer`, `nur_offen=true` den
+> `AnlieferungsDatumWunsch`. Mit `open_only=true` (nur AA/AB/EB) ist der Datumsfilter
+> optional – so liefert z. B. `beleg_typ='AB'`, `adress_nummer`, `open_only=true` den
 > kompletten offenen Auftragsbestand eines Kunden. In den Ergebnissen heißen die Terminfelder
 > je Belegtyp unterschiedlich (EB: `RequestedDate`/`BestaetigtZum`, AB: `KDWunsch`), und der
 > 1900-01-01-Platzhalter wird als null geliefert. Alle Termine kommen als reines Datum ohne
@@ -284,6 +284,10 @@ Lieferantenanfragen (43 %), wo naturgemäß noch kein Termin feststeht.
 > Belege mit Uhrzeit wie `B.Datum` 21:45).
 
 Der `31.12.`-Platzhalter im Wunschtermin betrifft rund 2.000 AB-Positionen (1 %).
+
+**Weitere bewusste Platzhalter:** `7777-01-01` (rund 2.600 Positionen, v. a. `LieferDatum`) und
+`9999-xx-xx` (rund 180, v. a. bestätigte Termine) werden vom Team gezielt gesetzt und sind keine
+echten Termine. `list_beleg_positionen` gibt sie unverändert aus; nur `1900-01-01` wird zu null.
 
 ### Übernahme-Mechanik (offene Mengen)
 

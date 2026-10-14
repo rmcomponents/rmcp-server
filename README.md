@@ -73,7 +73,7 @@ read from `.env` in the CWD (Docker Compose feeds from `docker/.env`).
 | `TOOL_MAX_GROUP_COLUMNS` | `3` | Cap for `group_by` columns |
 | `TOOL_MAX_AGGREGATIONS` | `10` | Cap for aggregation list |
 | `SQLSERVER_HOST` / `_DATABASE` (`ApiPreise`) / `_USER` / `_PASSWORD` / `_DRIVER` (`ODBC Driver 18 for SQL Server`) / `_TRUST_CERTIFICATE` (`yes`) / `_QUERY_TIMEOUT_SECONDS` (`120`) | — | SQL Server connectivity (ReadOnly, `Encrypt=yes`, autocommit) |
-| `MOUSER_API_KEY` | — | Mouser API key (required for `search_mouser_parts`) |
+| `MOUSER_API_KEY` | — | Mouser API key (required for `search_mouser_artikel`) |
 | `MOUSER_API_BASE_URL` | `https://api.mouser.com/api/v1` | Mouser endpoint |
 | `MOUSER_TIMEOUT_SECONDS` | `15.0` | httpx timeout |
 | `MOUSER_CACHE_TTL_HOURS` | `168.0` | Default cache TTL (7 days) |
@@ -85,12 +85,12 @@ read from `.env` in the CWD (Docker Compose feeds from `docker/.env`).
 
 | Tool | Source |
 |---|---|
-| `list_customers(customer_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + payment/shipping terms, currency, price levels, delivery address |
-| `list_parts(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) |
-| `list_part_stats(mpn, year, sales_purchasing, limit)` | SQL Server `StatistikenArtikel` join |
-| `list_line_items(artikel_nummer, document_type, date_from, date_to, include_archived, kunden_nummer, nur_offen, include_text_lines)` | SQL Server `BelegePositionen`/`Belege` (+ counterparty); columns depend on the document type |
-| `get_webshop_prices(mpns, output_format)` | SQL Server `WebshopPreise` |
-| `search_mouser_parts(mpns, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API, Redis-cached |
+| `list_adressen(such_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + payment/shipping terms, currency, price levels, delivery address |
+| `list_artikel(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) |
+| `list_artikel_statistik(artikel_nummer, jahr, einkauf_verkauf, limit)` | SQL Server `StatistikenArtikel` join |
+| `list_beleg_positionen(artikel_nummer, beleg_typ, date_from, date_to, include_archived, adress_nummer, open_only, include_text_lines)` | SQL Server `BelegePositionen`/`Belege` (+ counterparty); columns depend on the document type |
+| `get_webshop_preise(artikel_nummern, output_format)` | SQL Server `WebshopPreise` |
+| `search_mouser_artikel(artikel_nummern, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API, Redis-cached |
 
 ### Generic result-set tools (all require a `result_id`)
 
@@ -127,7 +127,7 @@ Unit tests mock Redis with `fakeredis`; `tests/integration/` is currently empty.
 
 ```
 MCP client
-   │  tool call (e.g. list_customers, list_parts)
+   │  tool call (e.g. list_adressen, list_artikel)
    ▼
 tools/*.py  ──►  database.py fetch_*_stream()     # pyodbc, streaming pa.RecordBatch
    ▼

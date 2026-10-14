@@ -1,4 +1,4 @@
-"""Tests for alphaplan_mcp.tools.mouser.search_mouser_parts."""
+"""Tests for alphaplan_mcp.tools.mouser.search_mouser_artikel."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
-from alphaplan_mcp.tools.mouser import search_mouser_parts
+from alphaplan_mcp.tools.mouser import search_mouser_artikel
 
 FIXTURE = json.loads(
     (Path(__file__).parents[2] / "src" / "alphaplan_mcp" / "apis" / "mouser" / "example-response.json").read_text()
@@ -33,7 +33,7 @@ async def test_search_mouser_parts_happy_path():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = FIXTURE.get("SearchResults", {}).get("Parts", [])
         
-        result = await search_mouser_parts(["ABC123"])
+        result = await search_mouser_artikel(["ABC123"])
         
         # Verify API was called
         mock_api.assert_called_once_with("ABC123", retry_on_rate_limit=True)
@@ -85,7 +85,7 @@ async def test_search_mouser_parts_csv_output():
         mock_cache.set = AsyncMock()
         mock_api.assert_not_called()
 
-        result = await search_mouser_parts(["ABC123"], output_format="csv")
+        result = await search_mouser_artikel(["ABC123"], output_format="csv")
         csv_data = result["csv"]
 
         assert result["sha256_base64"] == base64.b64encode(
@@ -141,7 +141,7 @@ async def test_search_mouser_parts_csv_output_fresh():
             }
         ]
 
-        result = await search_mouser_parts(["ABC123"], output_format="csv")
+        result = await search_mouser_artikel(["ABC123"], output_format="csv")
         csv_data = result["csv"]
 
         assert result["sha256_base64"] == base64.b64encode(
@@ -175,7 +175,7 @@ async def test_search_mouser_parts_custom_ttl():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
         
-        result = await search_mouser_parts(["ABC123"], cache_ttl_override_hours=4.0)
+        result = await search_mouser_artikel(["ABC123"], cache_ttl_override_hours=4.0)
         
         res = result["results"]["ABC123"]
         assert res["metadata"]["cache_ttl_hours"] == 4.0
@@ -193,7 +193,7 @@ async def test_search_mouser_parts_caching_disabled():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
         
-        result = await search_mouser_parts(["ABC123"], caching=False)
+        result = await search_mouser_artikel(["ABC123"], caching=False)
         
         # Cache should not be called
         mock_cache.get.assert_not_called()
@@ -225,7 +225,7 @@ async def test_search_mouser_parts_cache_hit():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = cached_parts
         
-        result = await search_mouser_parts(["ABC123"])
+        result = await search_mouser_artikel(["ABC123"])
         
         # API should NOT be called
         mock_api.assert_not_called()
@@ -246,7 +246,7 @@ async def test_search_mouser_parts_cache_hit():
 @pytest.mark.asyncio
 async def test_search_mouser_parts_invalid_mpns_empty_list():
     """Empty MPNs list returns ToolError dict."""
-    result = await search_mouser_parts([])
+    result = await search_mouser_artikel([])
     
     assert "error" in result
     assert result["error"] == "INVALID_MPNS"
@@ -255,7 +255,7 @@ async def test_search_mouser_parts_invalid_mpns_empty_list():
 @pytest.mark.asyncio
 async def test_search_mouser_parts_invalid_mpn():
     """Empty MPN returns ToolError dict."""
-    result = await search_mouser_parts([""])
+    result = await search_mouser_artikel([""])
     
     assert "" in result["results"]
     assert result["results"][""]["error"] == "INVALID_MPN"
@@ -264,7 +264,7 @@ async def test_search_mouser_parts_invalid_mpn():
 @pytest.mark.asyncio
 async def test_search_mouser_parts_invalid_cache_ttl():
     """Invalid TTL returns ToolError dict."""
-    result = await search_mouser_parts(["ABC123"], cache_ttl_override_hours=0)
+    result = await search_mouser_artikel(["ABC123"], cache_ttl_override_hours=0)
     
     assert "error" in result
     assert result["error"] == "INVALID_CACHE_TTL"
@@ -272,7 +272,7 @@ async def test_search_mouser_parts_invalid_cache_ttl():
 
 @pytest.mark.asyncio
 async def test_search_mouser_parts_too_many_mpns():
-    result = await search_mouser_parts([f"MPN{i}" for i in range(26)])
+    result = await search_mouser_artikel([f"MPN{i}" for i in range(26)])
     assert result["error"] == "TOO_MANY_MPNS"
 
 
@@ -299,7 +299,7 @@ async def test_search_mouser_parts_mixed_cache_hits():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
 
-        result = await search_mouser_parts(["A", "B", "C", "D", "E"])
+        result = await search_mouser_artikel(["A", "B", "C", "D", "E"])
 
         assert mock_api.call_count == 2
         assert {c.args[0] for c in mock_api.call_args_list} == {"D", "E"}
@@ -332,7 +332,7 @@ async def test_search_mouser_parts_partial_failure():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
 
-        result = await search_mouser_parts(["BAD", "GOOD"])
+        result = await search_mouser_artikel(["BAD", "GOOD"])
 
         assert result["results"]["BAD"]["error"] == "MOUSER_TIMEOUT"
         assert result["results"]["GOOD"]["part_count"] == 0
@@ -361,7 +361,7 @@ async def test_search_mouser_parts_runs_in_parallel():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
 
-        result = await search_mouser_parts(["A", "B"])
+        result = await search_mouser_artikel(["A", "B"])
         assert set(result["results"]) == {"A", "B"}
 
 
@@ -377,7 +377,7 @@ async def test_search_mouser_parts_preserves_internal_spaces_in_keys():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
 
-        result = await search_mouser_parts(["HK1005 10NJ-T", "HK1608 R47J-TV"])
+        result = await search_mouser_artikel(["HK1005 10NJ-T", "HK1608 R47J-TV"])
 
         assert set(result["results"]) == {"HK1005 10NJ-T", "HK1608 R47J-TV"}
         assert {c.args[0] for c in mock_api.call_args_list} == {"HK100510NJ-T", "HK1608R47J-TV"}
@@ -397,7 +397,7 @@ async def test_search_mouser_parts_multiple_spaces_preserved():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
 
-        result = await search_mouser_parts(["HK1005  10NJ-T"])
+        result = await search_mouser_artikel(["HK1005  10NJ-T"])
 
         assert "HK1005  10NJ-T" in result["results"]
         assert result["results"]["HK1005  10NJ-T"]["requested_mpn"] == "HK1005  10NJ-T"
@@ -416,7 +416,7 @@ async def test_search_mouser_parts_leading_trailing_whitespace_stripped():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = []
 
-        result = await search_mouser_parts(["  HK1005 10NJ-T  "])
+        result = await search_mouser_artikel(["  HK1005 10NJ-T  "])
 
         assert "HK1005 10NJ-T" in result["results"]
         assert "  HK1005 10NJ-T  " not in result["results"]
@@ -436,7 +436,7 @@ async def test_search_mouser_parts_dedup_collision_exposes_both_keys():
         mock_cache.set = AsyncMock()
         mock_extract.return_value = [{"manufacturer_part_number": "HK100510NJ-T"}]
 
-        result = await search_mouser_parts(["HK1005 10NJ-T", "HK100510NJ-T"])
+        result = await search_mouser_artikel(["HK1005 10NJ-T", "HK100510NJ-T"])
 
         assert set(result["results"]) == {"HK1005 10NJ-T", "HK100510NJ-T"}
         mock_api.assert_called_once_with("HK100510NJ-T", retry_on_rate_limit=True)
@@ -468,7 +468,7 @@ async def test_search_mouser_parts_csv_output_with_spaces():
         mock_cache.get = AsyncMock(return_value=entry)
         mock_cache.set = AsyncMock()
 
-        result = await search_mouser_parts(["HK1005 10NJ-T"], output_format="csv")
+        result = await search_mouser_artikel(["HK1005 10NJ-T"], output_format="csv")
         csv_data = result["csv"]
 
         assert result["sha256_base64"] == base64.b64encode(
@@ -480,3 +480,25 @@ async def test_search_mouser_parts_csv_output_with_spaces():
         assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error"
         row = lines[1].split(",")
         assert row[0] == "HK1005 10NJ-T"
+
+
+@pytest.mark.parametrize("parts,expected_error", [
+    ([], "no parts found"),
+    ([{"price_breaks": []}], "no price breaks"),
+])
+@pytest.mark.asyncio
+async def test_search_mouser_parts_csv_marks_rows_without_prices(parts, expected_error):
+    """An empty price row must say why: not listed at Mouser vs. listed without prices."""
+    with patch("alphaplan_mcp.tools.mouser.search_by_part_number", new_callable=AsyncMock) as mock_api, \
+         patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache, \
+         patch("alphaplan_mcp.tools.mouser.extract_purchasing_parts") as mock_extract:
+        mock_api.return_value = {"SearchResults": {"Parts": []}}
+        mock_cache.get = AsyncMock(return_value=None)
+        mock_cache.set = AsyncMock()
+        mock_extract.return_value = parts
+
+        result = await search_mouser_artikel(["TCC1206X7R106K6R3HT"], output_format="csv")
+    row = result["csv"].strip().split("\n")[1].split(",")
+    assert row[0] == "TCC1206X7R106K6R3HT"
+    assert row[1:5] == ["", "", "", ""]
+    assert row[6] == expected_error

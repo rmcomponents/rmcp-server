@@ -1,13 +1,13 @@
 import pytest
 import pyarrow as pa
 from unittest.mock import patch, AsyncMock, MagicMock
-from alphaplan_mcp.tools.parts import list_part_stats
+from alphaplan_mcp.tools.parts import list_artikel_statistik
 from alphaplan_mcp.errors import ToolError
 
 @pytest.mark.asyncio
 async def test_list_part_stats_missing_year():
     with pytest.raises(ToolError):
-        await list_part_stats(year=None)
+        await list_artikel_statistik(jahr=None)
 
 @pytest.mark.asyncio
 async def test_list_part_stats_with_limit():
@@ -25,7 +25,7 @@ async def test_list_part_stats_with_limit():
         yield mock_batch
 
     with patch('alphaplan_mcp.tools.parts.fetch_part_stats_stream', side_effect=mock_stream):
-        result = await list_part_stats(year=2025, limit=10)
+        result = await list_artikel_statistik(jahr=2025, limit=10)
         assert isinstance(result, list)
         assert len(result) == 1
         assert result[0]["ArtikelNummer"] == "A123"
@@ -52,7 +52,7 @@ async def test_list_part_stats_store_result():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch('alphaplan_mcp.tools.parts.fetch_part_stats_stream', side_effect=mock_stream):
-        result = await list_part_stats(year=2025, ctx=mock_ctx)
+        result = await list_artikel_statistik(jahr=2025, ctx=mock_ctx)
         assert isinstance(result, dict)
         assert result["result_id"] == "rs_123"
         mock_store.store_result_stream.assert_called_once()

@@ -66,14 +66,14 @@ Grenze/Minimum/Maximum.
 Alle Werte sind **vorberechnete Aggregate**, keine Sichten auf `Belege`. Sie können von
 einer Live-Auswertung abweichen; welcher Job sie fortschreibt, ist unbekannt.
 
-### `StatistikenArtikel` (rund 180.000) – Backend von `list_part_stats`
+### `StatistikenArtikel` (rund 180.000) – Backend von `list_artikel_statistik`
 
 Granularität **Artikel × Einkauf/Verkauf × Jahr × Kalenderwoche**:
 
 | Spalte | Bedeutung |
 |---|---|
 | `ArtikelID` | |
-| `EinkaufVerkauf` | `E` = Einkauf, `V` = Verkauf (Parameter `sales_purchasing`) |
+| `EinkaufVerkauf` | `E` = Einkauf, `V` = Verkauf (Parameter `einkauf_verkauf` von `list_artikel_statistik`) |
 | `Jahr`, `KW` | **KW-Granularität, nicht Monat** |
 | `Netto`, `Roh` | Umsatz und Rohertrag |
 | `BEEanzahl` | Stückzahl (Schreibfehler im Spaltennamen ist echt) |

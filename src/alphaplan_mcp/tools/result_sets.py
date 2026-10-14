@@ -115,7 +115,7 @@ async def describe_columns(
     `min`, `max`, `skewness`, `count_negative` (rows below zero — useful for spotting credits /
     corrections), and the requested `percentiles` (default `[0.05, 0.25, 0.5, 0.75, 0.95]`,
     linear interpolation). String/bool columns return `count`, `count_null` and (for strings)
-    `distinct_count` instead.
+    `distinct_count` (number of distinct non-null values) instead.
 
     Parameters:
     - `result_id`: The stored result set.
@@ -410,7 +410,7 @@ async def join(
     Combines two result sets into one chainable result set. This is the only operation
     that spans more than one `result_id`; it exists to enable questions such as
     "revenue by product group" when the measures and the dimensions live in different
-    result sets (e.g. `list_part_stats` left-joined with `list_parts`).
+    result sets (e.g. `list_artikel_statistik` left-joined with `list_artikel`).
 
     Parameters:
     - `left_result_id`, `right_result_id`: The two result sets to join.

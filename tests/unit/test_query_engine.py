@@ -1302,7 +1302,7 @@ class TestDescribeColumns:
         c = res["columns"][0]
         assert c["kind"] == "string"
         assert c["count"] == 5 and c["count_null"] == 1
-        assert c["distinct_count"] == 5
+        assert c["distinct_count"] == 4  # null is not a distinct value (see count_null)
 
     @pytest.mark.asyncio
     async def test_bool_bundle(self, setup_engine):

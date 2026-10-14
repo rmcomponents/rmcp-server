@@ -1,10 +1,10 @@
-"""Unit tests for list_parts default-exclusion warning (Rec 4)."""
+"""Unit tests for list_artikel default-exclusion warning (Rec 4)."""
 
 import pytest
 import pyarrow as pa
 from unittest.mock import patch, AsyncMock, MagicMock
 
-from alphaplan_mcp.tools.parts import list_parts
+from alphaplan_mcp.tools.parts import list_artikel
 
 
 @pytest.mark.asyncio
@@ -32,7 +32,7 @@ async def test_list_parts_default_exclusion_adds_warning():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch("alphaplan_mcp.tools.parts.fetch_parts_stream", side_effect=mock_stream):
-        result = await list_parts(ctx=mock_ctx)
+        result = await list_artikel(ctx=mock_ctx)
 
     # default negative_filter_term ('TCC%') applied -> prominent warning present
     assert isinstance(result, dict)
@@ -61,7 +61,7 @@ async def test_list_parts_no_default_warning_when_explicit_none():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch("alphaplan_mcp.tools.parts.fetch_parts_stream", side_effect=mock_stream):
-        result = await list_parts(negative_filter_term=None, ctx=mock_ctx)
+        result = await list_artikel(negative_filter_term=None, ctx=mock_ctx)
 
     assert isinstance(result, dict)
     assert result["result_id"] == "rs_2"
@@ -86,7 +86,7 @@ async def test_list_parts_include_archived_propagated():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch("alphaplan_mcp.tools.parts.fetch_parts_stream", side_effect=mock_factory):
-        await list_parts(negative_filter_term=None, include_archived=True, ctx=mock_ctx)
+        await list_artikel(negative_filter_term=None, include_archived=True, ctx=mock_ctx)
 
     assert captured["include_archived"] is True
     _, kwargs = mock_store.store_result_stream.call_args
@@ -111,7 +111,7 @@ async def test_list_parts_include_archived_default_false():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch("alphaplan_mcp.tools.parts.fetch_parts_stream", side_effect=mock_factory):
-        await list_parts(negative_filter_term=None, ctx=mock_ctx)
+        await list_artikel(negative_filter_term=None, ctx=mock_ctx)
 
     assert captured["include_archived"] is False
     _, kwargs = mock_store.store_result_stream.call_args

@@ -1,24 +1,24 @@
 import pytest
 import pyarrow as pa
 from unittest.mock import patch, MagicMock
-from alphaplan_mcp.tools.documents import list_line_items, _price_summary
+from alphaplan_mcp.tools.documents import list_beleg_positionen, _price_summary
 from alphaplan_mcp.errors import ToolError
 
 @pytest.mark.asyncio
 async def test_list_line_items_missing_params():
     with pytest.raises(ToolError):
-        await list_line_items(artikel_nummer="", document_type="AR", date_from="2025-01-01", date_to="2025-12-31")
+        await list_beleg_positionen(artikel_nummer="", beleg_typ="AR", date_from="2025-01-01", date_to="2025-12-31")
     with pytest.raises(ToolError):
-        await list_line_items(artikel_nummer="A123", document_type="AR", date_from=None, date_to="2025-12-31")
+        await list_beleg_positionen(artikel_nummer="A123", beleg_typ="AR", date_from=None, date_to="2025-12-31")
     with pytest.raises(ToolError):
-        await list_line_items(artikel_nummer="A123", document_type="AR", date_from="2025-01-01", date_to=None)
+        await list_beleg_positionen(artikel_nummer="A123", beleg_typ="AR", date_from="2025-01-01", date_to=None)
     with pytest.raises(ToolError):
-        await list_line_items(artikel_nummer="A123", document_type="", date_from="2025-01-01", date_to="2025-12-31")
+        await list_beleg_positionen(artikel_nummer="A123", beleg_typ="", date_from="2025-01-01", date_to="2025-12-31")
 
 @pytest.mark.asyncio
 async def test_list_line_items_invalid_document_type():
     with pytest.raises(ToolError) as exc_info:
-        await list_line_items(artikel_nummer="A123", document_type="XX", date_from="2025-01-01", date_to="2025-12-31")
+        await list_beleg_positionen(artikel_nummer="A123", beleg_typ="XX", date_from="2025-01-01", date_to="2025-12-31")
     assert exc_info.value.code == "invalid_parameters"
     assert "available_document_types" in exc_info.value.details
     assert "EB" in exc_info.value.details["available_document_types"]
@@ -59,17 +59,17 @@ async def test_list_line_items_store_result_with_summary():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        result = await list_line_items(
+        result = await list_beleg_positionen(
             artikel_nummer="A123",
-            document_type="er",
+            beleg_typ="er",
             date_from="2025-01-01",
             date_to="2025-12-31",
             ctx=mock_ctx,
         )
     assert isinstance(result, dict)
     assert result["result_id"] == "rs_123"
-    assert captured["provenance"].op == "list_line_items"
-    assert captured["provenance"].parameters["beleg_typ"] == 10
+    assert captured["provenance"].op == "list_beleg_positionen"
+    assert captured["provenance"].parameters["beleg_typ_id"] == 10
     ps = result["price_summary"]
     assert ps["min"] == 0.03
     assert ps["max"] == 0.05
@@ -81,7 +81,7 @@ async def test_list_line_items_store_result_with_summary():
 @pytest.mark.asyncio
 async def test_list_line_items_resolves_eb_to_9():
     async def mock_stream(*args, **kwargs):
-        captured["beleg_typ"] = kwargs.get("beleg_typ")
+        captured["beleg_typ_id"] = kwargs.get("beleg_typ_id")
         return
         yield  # pragma: no cover
 
@@ -98,15 +98,15 @@ async def test_list_line_items_resolves_eb_to_9():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        result = await list_line_items(
+        result = await list_beleg_positionen(
             artikel_nummer="A123",
-            document_type="EB",
+            beleg_typ="EB",
             date_from="2025-01-01",
             date_to="2025-12-31",
             ctx=mock_ctx,
         )
     assert result["result_id"] == "rs_eb"
-    assert captured["beleg_typ"] == 9
+    assert captured["beleg_typ_id"] == 9
 
 
 @pytest.mark.parametrize("doc_type,expected_beleg_typ", [
@@ -116,7 +116,7 @@ async def test_list_line_items_resolves_eb_to_9():
 @pytest.mark.asyncio
 async def test_list_line_items_aa_ea_beleg_typ(doc_type, expected_beleg_typ):
     async def mock_stream(*args, **kwargs):
-        captured["beleg_typ"] = kwargs.get("beleg_typ")
+        captured["beleg_typ_id"] = kwargs.get("beleg_typ_id")
         return
         yield  # pragma: no cover
 
@@ -133,15 +133,15 @@ async def test_list_line_items_aa_ea_beleg_typ(doc_type, expected_beleg_typ):
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        result = await list_line_items(
+        result = await list_beleg_positionen(
             artikel_nummer="0402B102J500CT",
-            document_type=doc_type,
+            beleg_typ=doc_type,
             date_from="2025-01-01",
             date_to="2025-12-31",
             ctx=mock_ctx,
         )
     assert result["result_id"] == f"rs_{doc_type}"
-    assert captured["beleg_typ"] == expected_beleg_typ
+    assert captured["beleg_typ_id"] == expected_beleg_typ
 
 
 def _run(captured):
@@ -179,9 +179,9 @@ async def test_list_line_items_include_archived_default(doc_type, expected):
     captured = {}
     mock_ctx, mock_stream = _run(captured)
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        await list_line_items(
+        await list_beleg_positionen(
             artikel_nummer="A123",
-            document_type=doc_type,
+            beleg_typ=doc_type,
             date_from="2025-01-01",
             date_to="2025-12-31",
             ctx=mock_ctx,
@@ -194,9 +194,9 @@ async def test_list_line_items_include_archived_explicit_override():
     captured = {}
     mock_ctx, mock_stream = _run(captured)
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        await list_line_items(
+        await list_beleg_positionen(
             artikel_nummer="A123",
-            document_type="AR",
+            beleg_typ="AR",
             date_from="2025-01-01",
             date_to="2025-12-31",
             include_archived=True,
@@ -207,9 +207,9 @@ async def test_list_line_items_include_archived_explicit_override():
     captured2 = {}
     mock_ctx2, mock_stream2 = _run(captured2)
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream2):
-        await list_line_items(
+        await list_beleg_positionen(
             artikel_nummer="A123",
-            document_type="AB",
+            beleg_typ="AB",
             date_from="2025-01-01",
             date_to="2025-12-31",
             include_archived=False,
@@ -245,9 +245,9 @@ async def test_list_line_items_empty_skips_nulls():
     mock_ctx.fastmcp.result_store = mock_store
 
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        result = await list_line_items(
+        result = await list_beleg_positionen(
             artikel_nummer="A123",
-            document_type="AR",
+            beleg_typ="AR",
             date_from="2025-01-01",
             date_to="2025-12-31",
             ctx=mock_ctx,
@@ -282,55 +282,55 @@ def _capture_run():
 async def test_list_line_items_customer_backlog_without_article_or_dates():
     captured, mock_ctx, mock_stream = _capture_run()
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        result = await list_line_items(document_type="ab", kunden_nummer=" D010187 ",
-                                       nur_offen=True, ctx=mock_ctx)
+        result = await list_beleg_positionen(beleg_typ="ab", adress_nummer=" D010187 ",
+                                       open_only=True, ctx=mock_ctx)
     assert result["result_id"] == "rs_x"
-    assert captured["beleg_typ"] == 3
+    assert captured["beleg_typ_id"] == 3
     assert captured["artikel_nummer"] is None
-    assert captured["kunden_nummer"] == "D010187"
-    assert captured["nur_offen"] is True
+    assert captured["adress_nummer"] == "D010187"
+    assert captured["open_only"] is True
     assert captured["include_archived"] is False
     assert captured["date_from"] is None and captured["date_to"] is None
-    assert captured["provenance"].parameters["kunden_nummer"] == "D010187"
-    assert captured["provenance"].parameters["nur_offen"] is True
+    assert captured["provenance"].parameters["adress_nummer"] == "D010187"
+    assert captured["provenance"].parameters["open_only"] is True
 
 
 @pytest.mark.asyncio
 async def test_list_line_items_requires_article_or_customer():
     with pytest.raises(ToolError) as exc_info:
-        await list_line_items(document_type="AB", date_from="2025-01-01", date_to="2025-12-31")
+        await list_beleg_positionen(beleg_typ="AB", date_from="2025-01-01", date_to="2025-12-31")
     assert exc_info.value.code == "invalid_parameters"
 
 
 @pytest.mark.asyncio
 async def test_list_line_items_dates_both_or_neither():
     with pytest.raises(ToolError):
-        await list_line_items(artikel_nummer="A1", document_type="AB", date_from="2025-01-01",
-                              nur_offen=True)
+        await list_beleg_positionen(artikel_nummer="A1", beleg_typ="AB", date_from="2025-01-01",
+                              open_only=True)
 
 
 @pytest.mark.asyncio
-async def test_list_line_items_dates_required_without_nur_offen():
+async def test_list_line_items_dates_required_without_open_only():
     with pytest.raises(ToolError):
-        await list_line_items(kunden_nummer="D010187", document_type="AB")
+        await list_beleg_positionen(adress_nummer="D010187", beleg_typ="AB")
 
 
 @pytest.mark.parametrize("doc_type", ["AN", "AL", "AR", "EA", "ER"])
 @pytest.mark.asyncio
-async def test_list_line_items_nur_offen_rejected_for_end_documents(doc_type):
+async def test_list_line_items_open_only_rejected_for_end_documents(doc_type):
     with pytest.raises(ToolError) as exc_info:
-        await list_line_items(kunden_nummer="D010187", document_type=doc_type, nur_offen=True)
-    assert "nur_offen" in exc_info.value.message
+        await list_beleg_positionen(adress_nummer="D010187", beleg_typ=doc_type, open_only=True)
+    assert "open_only" in exc_info.value.message
 
 
 @pytest.mark.parametrize("doc_type", ["AA", "AB", "EB"])
 @pytest.mark.asyncio
-async def test_list_line_items_nur_offen_allowed(doc_type):
+async def test_list_line_items_open_only_allowed(doc_type):
     captured, mock_ctx, mock_stream = _capture_run()
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        await list_line_items(artikel_nummer="A1", document_type=doc_type, nur_offen=True,
+        await list_beleg_positionen(artikel_nummer="A1", beleg_typ=doc_type, open_only=True,
                               ctx=mock_ctx)
-    assert captured["nur_offen"] is True
+    assert captured["open_only"] is True
 
 
 # --- per-BelegTyp column registry ---------------------------------------------------------
@@ -356,13 +356,13 @@ _AB_ONLY = ["KDWunsch", "IhrAuftrag", "IhrAuftragPos", "KundenArtNr", "Bestand",
 _EB_ONLY = ["RequestedDate", "BestaetigtZum"]
 
 
-def _names(beleg_typ):
-    return [c.name for c in line_item_columns_for(beleg_typ)]
+def _names(beleg_typ_id):
+    return [c.name for c in line_item_columns_for(beleg_typ_id)]
 
 
-@pytest.mark.parametrize("beleg_typ", sorted(DOCUMENT_TYPE_BELEG_TYP.values()))
-def test_line_item_registry_common_columns_for_every_type(beleg_typ):
-    names = _names(beleg_typ)
+@pytest.mark.parametrize("beleg_typ_id", sorted(DOCUMENT_TYPE_BELEG_TYP.values()))
+def test_line_item_registry_common_columns_for_every_type(beleg_typ_id):
+    names = _names(beleg_typ_id)
     assert [n for n in names if n in _COMMON_COLUMNS] == _COMMON_COLUMNS
     # price_summary / archived_summary in tools/documents.py depend on these
     assert "NettoPreisStueckEUR" in names and "IstArchiviert" in names
@@ -383,9 +383,9 @@ def test_line_item_registry_eb_columns():
     assert not any(n in names for n in _AB_ONLY)
 
 
-@pytest.mark.parametrize("beleg_typ", [1, 2, 4, 5, 8, 10])
-def test_line_item_registry_other_types_keep_generic_dates(beleg_typ):
-    names = _names(beleg_typ)
+@pytest.mark.parametrize("beleg_typ_id", [1, 2, 4, 5, 8, 10])
+def test_line_item_registry_other_types_keep_generic_dates(beleg_typ_id):
+    names = _names(beleg_typ_id)
     assert {"LieferDatum", "LieferDatumBestaetigt", "OriginalDatum"} <= set(names)
     assert not any(n in names for n in _AB_ONLY + _EB_ONLY)
 
@@ -407,8 +407,11 @@ def test_build_query_joins_only_when_needed():
     ab = build_line_items_query(3, artikel_nummer="A1", date_from="2025-01-01", date_to="2025-12-31")
     assert "dbo.Lager LG ON LG.LagerID = BP.AbbuchungsLagerID" in ab.sql
     assert "dbo.Artikel ART" in ab.sql
+    assert ab.sql.count("dbo.Artikel ART") == 1  # shared by Status and WarenGruppe
     eb = build_line_items_query(9, artikel_nummer="A1", date_from="2025-01-01", date_to="2025-12-31")
-    assert "dbo.Lager LG" not in eb.sql and "dbo.Artikel ART" not in eb.sql
+    assert "dbo.Lager LG" not in eb.sql  # stock is AB only
+    # article group for every type; WarenGruppen depends on Artikel, so it must come after it
+    assert eb.sql.index("dbo.Artikel ART") < eb.sql.index("dbo.WarenGruppen WG")
 
 
 def test_build_query_custom_registry_type_specific_and_overrides():
@@ -439,7 +442,7 @@ def test_build_query_params_article_and_dates():
 
 
 def test_build_query_params_customer_open_no_dates():
-    q = build_line_items_query(3, kunden_nummer="D010187", nur_offen=True, include_archived=True)
+    q = build_line_items_query(3, adress_nummer="D010187", open_only=True, include_archived=True)
     assert q.sql.count("?") == len(q.params) == 2
     assert q.params == [3, "D010187"]
     assert "A.AdressNummer = ?" in q.sql
@@ -450,7 +453,7 @@ def test_build_query_params_customer_open_no_dates():
 
 
 def test_build_query_params_article_and_customer():
-    q = build_line_items_query(3, artikel_nummer="A1", kunden_nummer="D1", date_from="d1", date_to="d2")
+    q = build_line_items_query(3, artikel_nummer="A1", adress_nummer="D1", date_from="d1", date_to="d2")
     assert q.params == [3, "A1", "D1"] + ["d1", "d2"] * 4
     assert q.sql.count("?") == len(q.params)
 
@@ -516,7 +519,7 @@ async def test_fetch_line_items_stream_transforms_and_stable_schema(monkeypatch)
     monkeypatch.setattr(database, "build_connection", lambda: _FakeConn(cursor))
     monkeypatch.setattr(database.settings, "RESULTSET_CHUNK_ROWS", 1)
 
-    batches = [b async for b in fetch_line_items_stream(beleg_typ=8, artikel_nummer="A1",
+    batches = [b async for b in fetch_line_items_stream(beleg_typ_id=8, artikel_nummer="A1",
                                                         date_from="d1", date_to="d2")]
     assert len(batches) == 3
     # the all-null batches keep the declared types, so chunks concatenate on load
@@ -532,7 +535,7 @@ async def test_fetch_line_items_stream_transforms_and_stable_schema(monkeypatch)
 # --- text/comment lines ---------------------------------------------------------------------
 
 def test_build_query_text_lines_switch():
-    q = build_line_items_query(3, kunden_nummer="D1", nur_offen=True, include_text_lines=False)
+    q = build_line_items_query(3, adress_nummer="D1", open_only=True, include_text_lines=False)
     assert "BP.PositionsTyp = 0" in q.sql
     assert q.sql.count("?") == len(q.params) == 2
 
@@ -547,7 +550,7 @@ def test_build_query_without_any_predicate_is_valid_sql():
 async def test_list_line_items_include_text_lines_default_and_override(kwargs, expected):
     captured, mock_ctx, mock_stream = _capture_run()
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        await list_line_items(kunden_nummer="D010187", document_type="AB", nur_offen=True,
+        await list_beleg_positionen(adress_nummer="D010187", beleg_typ="AB", open_only=True,
                               ctx=mock_ctx, **kwargs)
     assert captured["include_text_lines"] is expected
     assert captured["provenance"].parameters["include_text_lines"] is expected
@@ -567,7 +570,7 @@ async def test_price_summary_ignores_text_lines():
 
     _, mock_ctx, _ = _capture_run()
     with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
-        result = await list_line_items(artikel_nummer="A123", document_type="AB",
+        result = await list_beleg_positionen(artikel_nummer="A123", beleg_typ="AB",
                                        date_from="2025-01-01", date_to="2025-12-31", ctx=mock_ctx)
     assert result["price_summary"]["count"] == 2
     assert result["price_summary"]["min"] == 0.04
@@ -592,3 +595,85 @@ def test_date_range_includes_whole_last_day():
     assert "B.Datum >= CAST(? AS date) AND B.Datum < DATEADD(day, 1, CAST(? AS date))" in q.sql
     assert "<= ?" not in q.sql
     assert q.sql.count("?") == len(q.params) == 10
+
+
+# --- review fixes: date validation, non-part articles, empty results --------------------------
+
+@pytest.mark.parametrize("date_from,date_to", [
+    ("01.01.2026", "2026-12-31"),
+    ("2026-01-01", "31.12.2026"),
+    ("2026-13-01", "2026-12-31"),
+    ("20260101", "20261231"),
+])
+@pytest.mark.asyncio
+async def test_list_line_items_rejects_non_iso_dates(date_from, date_to):
+    with pytest.raises(ToolError) as exc_info:
+        await list_beleg_positionen(artikel_nummer="A1", beleg_typ="AB",
+                                    date_from=date_from, date_to=date_to)
+    assert exc_info.value.code == "invalid_parameters"
+    assert "YYYY-MM-DD" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_list_line_items_rejects_reversed_range():
+    with pytest.raises(ToolError) as exc_info:
+        await list_beleg_positionen(artikel_nummer="A1", beleg_typ="AB",
+                                    date_from="2026-12-31", date_to="2026-01-01")
+    assert "after" in exc_info.value.message
+
+
+@pytest.mark.asyncio
+async def test_list_line_items_single_day_range_allowed():
+    captured, mock_ctx, mock_stream = _capture_run()
+    with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
+        await list_beleg_positionen(artikel_nummer="A1", beleg_typ="EB", date_from=" 2025-12-01",
+                                    date_to="2025-12-01", ctx=mock_ctx)
+    assert captured["date_from"] == captured["date_to"] == "2025-12-01"
+
+
+@pytest.mark.asyncio
+async def test_price_summary_ignores_non_part_article_groups():
+    rows = [
+        dict(_ROW_BASE, PositionsTyp=0, WarenGruppenNummer="TY_CB standard", NettoPreisStueckEUR=0.085),
+        dict(_ROW_BASE, PositionsTyp=0, ArtikelNummer="Frachtkosten / Freight charges",
+             WarenGruppenNummer="RMC_Kosten Transport", NettoPreisStueckEUR=25.0),
+        dict(_ROW_BASE, PositionsTyp=0, WarenGruppenNummer=None, NettoPreisStueckEUR=0.095),
+    ]
+
+    async def mock_stream(*args, **kwargs):
+        yield _batch(rows)
+
+    _, mock_ctx, _ = _capture_run()
+    with patch('alphaplan_mcp.tools.documents.fetch_line_items_stream', side_effect=mock_stream):
+        result = await list_beleg_positionen(artikel_nummer="A123", beleg_typ="EB",
+                                             date_from="2026-01-01", date_to="2026-12-31", ctx=mock_ctx)
+    assert result["price_summary"]["count"] == 2
+    assert result["price_summary"]["max"] == 0.095
+
+
+@pytest.mark.asyncio
+async def test_fetch_line_items_stream_empty_result_keeps_schema(monkeypatch):
+    from alphaplan_mcp import database
+    q = build_line_items_query(9, artikel_nummer="A1", date_from="d1", date_to="d1")
+    pytypes = {"IstArchiviert": bool, "PositionsTyp": int}
+    description = [(c.name, pytypes.get(c.name, str)) for c in q.columns]
+    cursor = _FakeCursor(description, [])
+    monkeypatch.setattr(database, "build_connection", lambda: _FakeConn(cursor))
+
+    batches = [b async for b in fetch_line_items_stream(beleg_typ_id=9, artikel_nummer="A1",
+                                                        date_from="d1", date_to="d1")]
+    assert len(batches) == 1 and batches[0].num_rows == 0
+    assert batches[0].schema.names == [c.name for c in q.columns]
+
+
+def test_text_columns_are_trimmed_and_nulled():
+    for name in ("ArtikelNummer", "KundenNummer", "KundeOderLieferant", "KundeKlassifizierung",
+                 "KundeBranche", "BelegWaehrung", "Titel", "Kommission", "WarenGruppe"):
+        col = next(c for c in LINE_ITEM_COLUMNS if c.name == name)
+        assert col.sql.startswith("NULLIF(LTRIM(RTRIM("), name
+
+
+def test_eur_per_1000_column():
+    col = next(c for c in LINE_ITEM_COLUMNS if c.name == "NettoPreisPro1000EUR")
+    assert "B.KursFaktor / NULLIF(B.KursDivisor, 0)" in col.sql
+    assert col.beleg_typen is None

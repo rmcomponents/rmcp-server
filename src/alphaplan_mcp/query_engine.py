@@ -1363,7 +1363,7 @@ class QueryEngine:
             "max_length": col_info.max_length,
         }
         if df is not None:
-            entry["distinct_count"] = _safe(lambda: df[col_info.name].n_unique())
+            entry["distinct_count"] = _safe(lambda: df[col_info.name].drop_nulls().n_unique())
             entry["examples"] = _safe(lambda: _column_examples(df[col_info.name]), default=[])
         return entry
 
@@ -1452,7 +1452,7 @@ class QueryEngine:
                 "kind": "string",
                 "count": count,
                 "count_null": null_count,
-                "distinct_count": int(series.n_unique()),
+                "distinct_count": int(series.drop_nulls().n_unique()),
             }
         if dtype == pl.Boolean:
             return {

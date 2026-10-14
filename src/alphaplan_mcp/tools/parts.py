@@ -1,4 +1,4 @@
-# Implements the list_parts MCP tool.
+# Implements the list_artikel MCP tool.
 # Fetches complete parts result sets from SQL Server incrementally
 # and stores them in Redis, returning only a compact summary.
 """Parts ingestion tool."""
@@ -15,7 +15,7 @@ from ..result_store import ResultSetStore
 
 logger = logging.getLogger(__name__)
 
-async def list_parts(
+async def list_artikel(
     positive_filter_term: Optional[str] = None,
     negative_filter_term: Optional[str] = "TCC%",
     match_code: Optional[str] = None,
@@ -41,7 +41,7 @@ async def list_parts(
       `negative_filter_term`), so the returned row count is lower than the raw article-master
       figure in `alphaplan://stammdaten`.
     
-    Filters can be combined. The result set is stored in Redis and managed identically to `list_customers`.
+    Filters can be combined. The result set is stored in Redis and managed identically to `list_adressen`.
 
     Column semantics worth knowing:
     - `Status` is the supplier's ability-to-supply indicator (source `Feld02`). It is mostly one of
@@ -54,13 +54,13 @@ async def list_parts(
     store: ResultSetStore = ctx.fastmcp.result_store
 
     logger.info(
-        "list_parts called with positive_filter_term=%s, negative_filter_term=%s, match_code=%s, sample_n=%s, include_archived=%s",
+        "list_artikel called with positive_filter_term=%s, negative_filter_term=%s, match_code=%s, sample_n=%s, include_archived=%s",
         positive_filter_term, negative_filter_term, match_code, sample_n, include_archived
     )
 
     try:
         provenance = ResultProvenance(
-            op="list_parts",
+            op="list_artikel",
             parameters={
                 "positive_filter_term": positive_filter_term,
                 "negative_filter_term": negative_filter_term,
@@ -92,14 +92,14 @@ async def list_parts(
             return out
         return summary
     except ToolError as e:
-        logger.error("ToolError in list_parts: %s", e.message)
+        logger.error("ToolError in list_artikel: %s", e.message)
         return e.to_dict()
 
 
-async def list_part_stats(
-    mpn: Optional[str] = None,
-    year: int = None,
-    sales_purchasing: Optional[str] = None,
+async def list_artikel_statistik(
+    artikel_nummer: Optional[str] = None,
+    jahr: int = None,
+    einkauf_verkauf: Optional[str] = None,
     limit: Optional[int] = None,
     ctx: Context = None,
 ) -> Union[ResultSetSummary, Dict[str, Any], List[Dict[str, Any]]]:
@@ -107,22 +107,22 @@ async def list_part_stats(
     Fetch part statistics, either returning a limited number of rows directly or storing as a result set.
     
     Parameters:
-    - `mpn`: Optional. If provided, filters parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard.
-    - `year`: Mandatory. The year to fetch statistics for (e.g., 2025).
-    - `sales_purchasing`: Optional. 'V' for Sales (Verkauf), 'E' for Purchasing (Einkauf). If omitted, returns both.
+    - `artikel_nummer`: Optional. If provided, filters parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard.
+    - `jahr`: Mandatory. The year to fetch statistics for (e.g., 2025).
+    - `einkauf_verkauf`: Optional. 'V' for Sales (Verkauf), 'E' for Purchasing (Einkauf). If omitted, returns both.
     - `limit`: Optional. If provided, returns up to this many rows directly in the response. If omitted, stores the full result set in Redis and returns a summary.
     """
-    if year is None:
-        raise ToolError(code="invalid_parameters", message="The 'year' parameter is mandatory.")
+    if jahr is None:
+        raise ToolError(code="invalid_parameters", message="The 'jahr' parameter is mandatory.")
 
     logger.info(
-        "list_part_stats called with mpn=%s, year=%s, sales_purchasing=%s, limit=%s",
-        mpn, year, sales_purchasing, limit
+        "list_artikel_statistik called with artikel_nummer=%s, jahr=%s, einkauf_verkauf=%s, limit=%s",
+        artikel_nummer, jahr, einkauf_verkauf, limit
     )
 
     if limit is not None:
         rows = []
-        async for batch in fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing, limit=limit):
+        async for batch in fetch_part_stats_stream(mpn=artikel_nummer, year=jahr, sales_purchasing=einkauf_verkauf, limit=limit):
             rows.extend(batch.to_pylist())
             if len(rows) >= limit:
                 return rows[:limit]
@@ -130,16 +130,16 @@ async def list_part_stats(
     else:
         store: ResultSetStore = ctx.fastmcp.result_store
         provenance = ResultProvenance(
-            op="list_part_stats",
+            op="list_artikel_statistik",
             parameters={
-                "mpn": mpn,
-                "year": year,
-                "sales_purchasing": sales_purchasing
+                "artikel_nummer": artikel_nummer,
+                "jahr": jahr,
+                "einkauf_verkauf": einkauf_verkauf
             }
         )
         summary = await store.store_result_stream(
             session_id=ctx.session_id,
             provenance=provenance,
-            batches=fetch_part_stats_stream(mpn=mpn, year=year, sales_purchasing=sales_purchasing),
+            batches=fetch_part_stats_stream(mpn=artikel_nummer, year=jahr, sales_purchasing=einkauf_verkauf),
         )
         return summary
