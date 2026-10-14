@@ -76,10 +76,15 @@ class NullMouserCache:
         return None
 
 
+# Bump when the cached payload (extracted parts) changes meaning, so old entries are ignored
+# and simply expire. v2: parts without price breaks are no longer dropped.
+CACHE_FORMAT_VERSION = "v2"
+
+
 def build_cache_key(mpn: str) -> str:
     """Build a normalized cache key for a part number."""
     normalized = normalize_mpn(mpn)
-    return f"{settings.REDIS_KEY_PREFIX}:mouser:part:{normalized}"
+    return f"{settings.REDIS_KEY_PREFIX}:mouser:part:{CACHE_FORMAT_VERSION}:{normalized}"
 
 
 def entry_age_hours(entry: CachedEntry, now: datetime | None = None) -> float:

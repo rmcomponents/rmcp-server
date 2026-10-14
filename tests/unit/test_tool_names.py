@@ -40,3 +40,11 @@ async def test_old_tool_names_are_gone():
                 "get_webshop_prices", "search_mouser_parts", "list_documents", "read_document",
                 "search_documents"):
         assert old not in tools, old
+
+
+@pytest.mark.asyncio
+async def test_search_documentation_zero_hits_is_visible():
+    """An empty list would reach the client as no output; the tool returns an object."""
+    result = await mcp.call_tool("search_documentation", {"query": "xyzzy-no-such-text"})
+    assert result.content  # at least one content block
+    assert result.structured_content == {"query": "xyzzy-no-such-text", "results": []}

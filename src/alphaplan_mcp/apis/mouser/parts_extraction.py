@@ -7,10 +7,12 @@ from typing import Any
 
 def extract_purchasing_parts(response: Any) -> list[dict[str, Any]]:
     """
-    Extract purchasable Mouser parts.
+    Extract the Mouser parts of a part-number search.
 
     Always returns a list and does not raise for malformed API data.
-    Parts without at least one valid price break are excluded.
+    Parts without price breaks are kept (with `price_breaks: []`): Mouser lists such parts
+    but will not quote them, typically with a `restriction` such as "not available for
+    purchase by distributors". Dropping them made a listed part look like "not at Mouser".
     """
     try:
         if not isinstance(response, dict):
@@ -31,8 +33,6 @@ def extract_purchasing_parts(response: Any) -> list[dict[str, Any]]:
                 continue
 
             prices = _extract_prices(raw_part.get("PriceBreaks"))
-            if not prices:
-                continue
 
             part = {
                 "manufacturer": _string(raw_part.get("Manufacturer")),

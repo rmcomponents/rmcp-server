@@ -156,11 +156,14 @@ async def search_documentation(query: str):
     this tool exists for MCP clients that do not expose resources directly to
     the model.
 
-    Scans document metadata and content for the query, returning compact
-    results (resource URI, title, relevant excerpt, relevance) so the model can
-    decide whether to call read_documentation(uri).
+    Scans document metadata and content for the query and returns
+    `{"query": ..., "results": [...]}`; each result is compact (resource URI,
+    title, relevant excerpt, relevance) so the model can decide whether to call
+    read_documentation(uri). No match returns `"results": []`.
     """
-    return await document_access.search_document_content(mcp, query)
+    # An object, not a bare list: an empty list would reach the client as no output at all.
+    results = await document_access.search_document_content(mcp, query)
+    return {"query": query, "results": results}
 
 @mcp.custom_route("/health", methods=["GET"])
 async def health_check(request):

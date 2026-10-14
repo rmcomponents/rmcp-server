@@ -502,3 +502,42 @@ async def test_search_mouser_parts_csv_marks_rows_without_prices(parts, expected
     assert row[0] == "TCC1206X7R106K6R3HT"
     assert row[1:5] == ["", "", "", ""]
     assert row[6] == expected_error
+
+
+def test_extract_keeps_listed_parts_without_prices():
+    """Mouser lists e.g. RC0603FR-0710KL without prices (restricted for distributors)."""
+    from alphaplan_mcp.apis.mouser.parts_extraction import extract_purchasing_parts
+    raw = {"SearchResults": {"NumberOfResult": 1, "Parts": [{
+        "Manufacturer": "YAGEO",
+        "ManufacturerPartNumber": "RC0603FR-0710KL",
+        "MouserPartNumber": "603-RC0603FR-0710KL",
+        "PriceBreaks": [],
+        "RestrictionMessage": "Für den Erwerb durch Distributoren nicht verfügbar.",
+    }]}}
+    parts = extract_purchasing_parts(raw)
+    assert len(parts) == 1
+    assert parts[0]["mouser_part_number"] == "603-RC0603FR-0710KL"
+    assert parts[0]["price_breaks"] == []
+    assert parts[0]["restriction"].startswith("Für den Erwerb")
+
+
+@pytest.mark.asyncio
+async def test_search_mouser_csv_reports_restriction_for_unquoted_part():
+    with patch("alphaplan_mcp.tools.mouser.search_by_part_number", new_callable=AsyncMock) as mock_api, \
+         patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache:
+        mock_api.return_value = {"SearchResults": {"Parts": [{
+            "ManufacturerPartNumber": "RC0603FR-0710KL", "MouserPartNumber": "603-RC0603FR-0710KL",
+            "PriceBreaks": [], "RestrictionMessage": "Not available for distributors.",
+        }]}}
+        mock_cache.get = AsyncMock(return_value=None)
+        mock_cache.set = AsyncMock()
+        result = await search_mouser_artikel(["RC0603FR-0710KL"], output_format="csv")
+        json_result = await search_mouser_artikel(["RC0603FR-0710KL"], output_format="json")
+    row = result["csv"].strip().split("\n")[1].split(",")
+    assert row[6] == "no price breaks: Not available for distributors."
+    assert json_result["results"]["RC0603FR-0710KL"]["part_count"] == 1
+
+
+def test_cache_key_is_versioned():
+    from alphaplan_mcp.apis.mouser.cache import build_cache_key, CACHE_FORMAT_VERSION
+    assert build_cache_key("abc") == f"alphaplan-mcp:mouser:part:{CACHE_FORMAT_VERSION}:ABC"

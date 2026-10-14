@@ -58,6 +58,9 @@ async def search_mouser_artikel(
     result has `requested_mpn` (the exact input string), `part_count`, `parts` (from
     `extract_purchasing_parts`), and `metadata` (`caching_enabled`, `cached`,
     `cache_age_hours`, `cache_ttl_hours`, `source` ("mouser_api" or "cache"), `fetched_at`).
+    A part Mouser lists but does not quote has `price_breaks: []` and usually a `restriction`
+    (e.g. "Für den Erwerb durch Distributoren nicht verfügbar.") - it is listed, just not
+    purchasable for us; `part_count: 0` means Mouser does not list the MPN at all.
     A failed lookup for one MPN does not fail the call; that MPN's entry contains an error
     object instead. Duplicate MPNs (after normalization) are queried once, but each distinct
     request string appears as a separate key in `results` pointing to the same part data.
@@ -74,8 +77,9 @@ async def search_mouser_artikel(
     - `csv`: the CSV string with columns:
       MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
       (`updated_at` = date of the cached or fresh Mouser data, 'YYYY-MM-DD'; `error` is the
-      lookup error, or 'no parts found' / 'no price breaks' when Mouser has no part or no
-      prices for that MPN)
+      lookup error; 'no parts found' when Mouser does not list the MPN; 'no price breaks'
+      (plus Mouser's restriction text, e.g. 'not available for purchase by distributors')
+      when Mouser lists the part but does not quote it)
     - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
       excluding the checksum line. Preserve LF line endings and the final newline
       exactly. ***Verify before using the data***.
@@ -132,7 +136,8 @@ async def search_mouser_artikel(
                 if not parts:
                     row_error = "no parts found"
                 elif not unit_prices:
-                    row_error = "no price breaks"
+                    restrictions = [p.get("restriction") for p in parts if p.get("restriction")]
+                    row_error = "no price breaks" + (f": {restrictions[0]}" if restrictions else "")
                 else:
                     row_error = ""
                 writer.writerow([

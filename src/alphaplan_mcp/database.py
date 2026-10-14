@@ -80,11 +80,11 @@ _CUSTOMER_QUERY = """
 
 _CUSTOMER_COLUMN_DESCRIPTIONS = {
     "adress_nummer": "Address number (AdressNummer) of the customer or supplier, e.g. 'D010187'; the adress_nummer parameter of list_beleg_positionen.",
-    "name_intern": "(Company Internal) customer name",
-    "name": "customer name",
-    "branche": "Industry sector of the customer.",
+    "name_intern": "Internal search name of the customer or supplier (SuchName).",
+    "name": "Name of the customer or supplier (SuchName).",
+    "branche": "Industry sector of the customer or supplier (Branche), e.g. Automotive, Medical, Industrial.",
     "kunden_typ": "Customer type(s) (K_KundenTypNeu), comma-separated, e.g. 'Entwicklung, Fertigung', 'EMS-Dienstleister', 'Distributor', 'Handel'.",
-    "finale_klassifizierung": "Final customer classification (KundenTyp), e.g. 'Finale Klassifizierung - 1 - KeyAccount'.",
+    "finale_klassifizierung": "Final customer classification (KundenTyp), stored as short value: 'KeyAccount', 'A', 'B', 'C', 'D', 'kein Potential', '? (unbekannt)', 'Distributor', 'TAIYO'. (The long labels like 'Finale Klassifizierung - 1 - KeyAccount' exist only in AlphaPlan's value list.)",
     "vertriebskanal": "Sales channel(s) (K_Vertriebskanal), comma-separated, e.g. 'EDI', 'Plattform Luminovo', 'Webshop', 'API'. Mostly empty.",
     "potential_zu_kategorie": "Potential category letter (Kategorie): K (key account), A, B, C, D, 0; occasionally T or '?'.",
     "umsatz_level_vorjahr": "Revenue level of the previous year (Beruf): K (key account), A, B, C, D, 0 (no revenue).",
@@ -211,7 +211,8 @@ LINE_ITEM_COLUMNS: Tuple[LineItemColumn, ...] = (
     LineItemColumn("KundeOderLieferant", _trimmed_text("A.SuchName"),
                    "Counterparty name (customer for outgoing documents, supplier for purchasing documents)."),
     LineItemColumn("KundeKlassifizierung", _trimmed_text("A.KundenTyp"),
-                   "Counterparty classification code (KundenTyp)."),
+                   "Counterparty's final classification (KundenTyp): 'KeyAccount', 'A'-'D', 'kein "
+                   "Potential', '? (unbekannt)', 'Distributor', 'TAIYO'; usually empty for suppliers."),
     LineItemColumn("KundeBranche", _trimmed_text("A.Branche"),
                    "Counterparty industry sector (Branche)."),
     LineItemColumn("Menge", "BP.VEAnzahl",

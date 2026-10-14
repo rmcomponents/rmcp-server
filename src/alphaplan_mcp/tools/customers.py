@@ -20,14 +20,14 @@ async def list_adressen(
     ctx: Context = None,
 ) -> Union[ResultSetSummary, Dict[str, Any]]:
     """
-    Fetch all matching customers, store as a result set, and return a summary.
-    No rows are returned to the model.
+    Fetch all matching addresses (customers and suppliers - AlphaPlan keeps both in `Adressen`),
+    store them as a result set, and return a summary. No rows are returned to the model.
     
     The `such_name` parameter supports SQL LIKE wildcards:
     - Use `%` to match any sequence of characters (e.g., `%GmbH%`).
     - Use `_` to match a single character.
 
-    Besides name, classification and responsible employees, each row carries the customer's
+    Besides name, classification and responsible employees, each row carries the address's
     master-data conditions (AlphaPlan customer master, tabs "Zahlung" / "Versand"):
     `zahlungsbedingung` (payment terms text), `waehrung` (currency code), `preisstufe_standard`
     and `preisstufe_vorrangig` (standard / priority price level), `versandbedingung` (shipping
@@ -35,12 +35,12 @@ async def list_adressen(
     method), `lieferadresse` (one-line delivery address if it
     differs from the main address, else null) and `lieferadressen_anzahl` (how many differing
     delivery addresses exist; >1 means `lieferadresse` shows only the standard / first one).
-    These are the values stored on the customer itself.
+    These are the values stored on the address itself.
 
     Notes:
-    - Despite the tool's focus on customers, every active address matching `such_name` is
-      returned, including suppliers (e.g. 70029 CCTC, 70016 Mouser). For supplier rows the
-      condition columns are the supplier's terms (what we pay / how they ship to us).
+    - Every active address matching `such_name` is returned, customers and suppliers alike
+      (e.g. 70029 CCTC, 70016 Mouser). For supplier rows the condition columns are the
+      supplier's terms (what we pay / how they ship to us).
     - The payment and shipping term texts are in the address's language (German or English),
       e.g. '30. des Folgemonats netto' vs. 'until 30th of the following month net' - filter on
       both or use a pattern.

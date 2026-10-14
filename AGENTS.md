@@ -44,7 +44,7 @@ filter, paginate, count, aggregate, group, and histogram the stored data.
 | 4 | **Config load** | `src/alphaplan_mcp/config.py` | `settings = Settings()` (pydantic-settings, env file `.env`) — imported everywhere; this is the single source of configuration truth |
 | 5 | **Docker deployment** | `docker compose -f docker/docker-compose.yml up --build` | Host port **9001** → container **9000**; Redis 7.2 sidecar (`docker/redis.conf`); env from `docker/.env`; health-gated `depends_on` |
 | 6 | **Legacy entry (do not extend)** | `src/main.py` | Pre-refactor standalone server with a single `list_adressen` tool and its own pyodbc connection building. Not packaged, not registered in `server.py`. Left in tree; treat as reference only |
-| 7 | **Tests** | pytest, rootdir = repo root | 434 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
+| 7 | **Tests** | pytest, rootdir = repo root | 440 unit tests in `tests/unit`. Venv lives at `src/.venv`. See §8 for the exact invocation that is known to work |
 | 8 | **Health check** | `GET /health` | Custom route in `server.py`; returns `{"status": "healthy", "redis": "ok"}` or 503 when Redis is unreachable |
 
 The canonical boot path is:
@@ -105,7 +105,7 @@ Actual structure (this is **current**; `src/README.md` is a pointer to the root 
 │               └── example-response.json # sample Mouser payload (for tests/dev)
 ├── tests/
 │   ├── conftest.py               # pytest_asyncio plugin + fake_redis fixture (fakeredis)
-│   ├── unit/                     # 20 test modules, 434 tests (mock Redis via fakeredis)
+│   ├── unit/                     # 20 test modules, 440 tests (mock Redis via fakeredis)
 │   └── integration/              # EMPTY — no integration tests yet
 ├── docker/
 │   ├── Dockerfile                # python:3.12-slim + ODBC Driver 18; runs `python -m alphaplan_mcp`
@@ -196,7 +196,7 @@ alias validation, type/description inheritance and folding `<source>` fields int
 
 `search_mouser_artikel` → normalize MPNs (`utils.normalize_mpn`: NFKC, dash-fold, collapse
 whitespace, uppercase, strip non-`[A-Z0-9\-_.]`), dedupe order-preserving → per normalized MPN, parallel cached lookup via
-`RedisMouserCache` (`{prefix}:mouser:part:{normalized}`, JSON envelope `{stored_at,payload}`
+`RedisMouserCache` (`{prefix}:mouser:part:{CACHE_FORMAT_VERSION}:{normalized}`, version bumped when the cached parts change meaning, JSON envelope `{stored_at,payload}`
 with Redis `EX`) else httpx `search_by_part_number` → `extract_purchasing_parts` → cache →
 optional 429 retry (60 s) → JSON or CSV (+`sha256_base64`). Cache misses degrade to a miss,
 never a tool failure.
@@ -245,7 +245,7 @@ All tools are registered in `server.py` via `mcp.tool()`.
 | `list_artikel_statistik(artikel_nummer, jahr, einkauf_verkauf, limit)` | SQL Server `StatistikenArtikel` join | `jahr` **mandatory**; `limit` returns rows inline instead of storing |
 | `list_beleg_positionen(artikel_nummer, beleg_typ, date_from, date_to, include_archived, adress_nummer, open_only, include_text_lines)` | SQL Server `BelegePositionen`/`Belege`/`Waehrungen`/`Adressen` (+ `Artikel`, `Lager` joins for AB) | One document type per call via `document_type` code → `BelegTyp`: `AN`=2, `AB`=3, `AL`=4, `AR`=5, `AA`=1, `EA`=8, `EB`=9, `ER`=10; unknown → `invalid_parameters` with `available_document_types`. Filters (ANDed): `mpn` and/or `counterparty_number` (exact `AdressNummer`; at least one required), date range (both or neither; a row matches when **any** of `LieferDatum`, `AnlieferungsDatumBestaetigt`, `AnlieferungsDatumWunsch`, `B.Datum` is inside; required unless `open_only`), `open_only` (`NochZuUebernehmen > 0`, only AA/AB/EB), `include_archived` (**default `false` for every type**, incl. AB), `include_text_lines` (default `true`; `false` adds `PositionsTyp = 0`). Columns `PositionsTyp` and `ArtikelBezeichnung` (plain text) identify text lines. **Columns depend on the BelegTyp** and come from `database.LINE_ITEM_COLUMNS`: common columns incl. `NettoPreisStueckEUR`, `NettoPreisStueck`/`NettoPreisPro1000` (document currency; per-1000 computed from `PENettoPreis * PEsProBE * BEsProVE`), `Preiseinheit`, `Titel`, `Kommission`, `ZusatzText1/2` (RTF → plain text via `utils.rtf_to_text`); EB: `RequestedDate`/`BestaetigtZum` instead of the generic dates; AB: `KDWunsch` instead of `OriginalDatum` plus `IhrAuftrag`, `IhrAuftragPos`, `KundenArtNr`, `Bestand`, `Status`, `AuftragsTyp`. All date columns are SQL `date` (time of day dropped; Arrow `date32`), 1900-01-01 placeholders → null; the range filter covers whole days (`>= CAST(date_from AS date) AND < DATEADD(day, 1, CAST(date_to AS date))`). Dates must be ISO `YYYY-MM-DD` and `date_from <= date_to` (validated before SQL). All text columns are trimmed, empty → null. Prices carry 8 decimals (`NettoPreisStueck*`), 6 (`NettoPreisPro1000*`) and 10 (`BelegKursFaktor`); `NettoPreisPro1000EUR` and `WarenGruppe`/`WarenGruppenNummer` (via `Artikel` + `WarenGruppen` joins) exist for every type. An empty result keeps its schema (fetcher emits one empty batch). Returns summary **plus** `price_summary` (over `NettoPreisStueckEUR` of part lines only: no text/empty lines, no `RMC_*` article groups = freight, packaging, services …) and `archived_summary` |
 | `get_webshop_preise(artikel_nummern, output_format)` | SQL Server `WebshopPreise` | ≤25 MPNs; CSV (or JSON) per-MPN price range; `updated_at` = date of the most recently updated `WebshopPreise` row of that MPN (empty/null if unknown); every requested MPN gets a row in input order, unknown ones with `error` = 'no webshop prices found'; raises `ToolError` on bad input |
-| `search_mouser_artikel(artikel_nummern, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation; CSV `error` also flags 'no parts found' / 'no price breaks' |
+| `search_mouser_artikel(artikel_nummern, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API (httpx) | ≤25 MPNs, parallel, per-MPN cache, per-MPN error isolation; parts Mouser lists but won't quote are kept with `price_breaks: []` + `restriction`; CSV `error` flags 'no parts found' (not listed) vs. 'no price breaks: <restriction>' |
 
 ### Generic result-set tools (all require `result_id`)
 
@@ -316,7 +316,7 @@ the MCP interface but **not** the data/loading layer.
 |---|---|---|
 | `list_documentation()` | List useful documents with lightweight metadata (URI, name, description, MIME type) | Same source of truth as `resources/list`; no args |
 | `read_documentation(uri)` | Return text content for a resource URI | Delegates to `server.read_resource` (same path as `resources/read`); unknown/unavailable URI → ToolError `RESOURCE_NOT_FOUND` |
-| `search_documentation(query)` | Discovery/search across document metadata + content | Convenience operation over the same resources, not a replacement resource interface; returns compact `[{uri, title, excerpt, relevance}]` |
+| `search_documentation(query)` | Discovery/search across document metadata + content | Convenience operation over the same resources, not a replacement resource interface; returns `{query, results: [{uri, title, excerpt, relevance}]}` (an object, so zero hits stay visible) |
 
 ---
 
@@ -374,7 +374,7 @@ which shows `../tests/unit/...`) is:
 
 ```bash
 cd src
-uv run pytest ../tests/unit          # all unit tests (434)
+uv run pytest ../tests/unit          # all unit tests (440)
 uv run pytest ../tests/unit/test_query_engine.py   # single module
 ```
 

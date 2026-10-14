@@ -101,7 +101,7 @@ Kunden **und** Lieferanten in einer Tabelle.
 | `AdressenID` / `AdressNummer` (nvarchar 10) | PK / fachliche Nummer |
 | `SuchName` (nvarchar 33) | **der Anzeigename** – keine getrennte Namensspalte hier |
 | `IstLieferant` (bit) | Kunde vs. Lieferant – **unzuverlässig**, siehe unten |
-| `KundenTyp` (255) | „Finale Klassifizierung – 1 – KeyAccount" usw. |
+| `KundenTyp` (255) | Finale Klassifizierung als Kurzwert: `KeyAccount`, `A`–`D`, `kein Potential`, `? (unbekannt)`, `Distributor`, `TAIYO` (die Langtexte „Finale Klassifizierung – 1 – KeyAccount" stehen nur in der Werteliste `Texte`) |
 | `K_KundenTypNeu`, `K_KundentypAlt` | Distributor / EMS-Dienstleister / Entwicklung / Fertigung / Handel / Universität … |
 | `Branche` (60) | Automotive, Medical, Industrial, Telecom, Luft- & Raumfahrt … |
 | `Kategorie` (1) + `Beruf` | Potential- und Umsatz-Level-Codes |
