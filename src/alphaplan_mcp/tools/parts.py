@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 
 async def list_artikel(
     positive_filter_term: Optional[str] = None,
-    negative_filter_term: Optional[str] = "TCC%",
+    negative_filter_term: Optional[str] = None,
     match_code: Optional[str] = None,
     sample_n: Optional[int] = None,
     include_archived: Optional[bool] = False,
@@ -29,27 +29,29 @@ async def list_artikel(
     
     Parameters:
     - `positive_filter_term`: Optional. If provided, only fetch parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard (e.g., `ABC%`).
-    - `negative_filter_term`: Optional, defaults to 'TCC%'. Excludes parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard. **The default excludes all `TCC%` articles (tens of thousands of rows).** Pass `None` to include them — unless you specifically want the truncated catalog, you very likely do. When the default is applied, the response includes a prominent `warning` noting the exclusion.
+    - `negative_filter_term`: Optional, defaults to `None` (no exclusion). If provided, excludes parts where `ArtikelNummer` matches this term. Supports `%` as a wildcard. `'TCC%'` excludes the newly created `TCC` articles (about 92 % of the article master); use it only for whole-catalog statistics. **Never combine it with targeted searches** (`positive_filter_term` / `match_code`): it silently drops matching TCC articles (e.g. CCTC parts in crossing and second-source searches).
     - `match_code`: Optional. If provided, filters parts where `MatchCode` contains this string (LIKE '%match_code%').
     - `sample_n`: Optional. If provided, returns a random sample of up to `sample_n` rows, drawn
       **after** all other filters (positive/negative/match_code) are applied, so it is a sample of
       the filtered population. If omitted, all matching rows are returned.
     - `include_archived`: Optional, defaults to `false`. When `false` (the default), archived
       articles (`IstArchiviert = 1`) are excluded from the result set. Pass `true` to include
-      archived articles as well. This is independent of `negative_filter_term`: two separate
-      silently-truncating cuts apply by default (`IstArchiviert = 0` here and non-`TCC` via
-      `negative_filter_term`), so the returned row count is lower than the raw article-master
-      figure in `alphaplan://stammdaten`.
+      archived articles as well. This cut applies by default, so the returned row count is
+      lower than the raw article-master figure in `alphaplan://stammdaten`.
     
     Filters can be combined. The result set is stored in Redis and managed identically to `list_adressen`.
 
     Column semantics worth knowing:
+    - Text columns are trimmed; empty strings are returned as null.
     - `Status` is the supplier's ability-to-supply indicator (source `Feld02`). It is mostly one of
       `rot` (red - the supplier cannot supply the part), `gelb` (yellow - limited availability), or
-      `gruen` (green - no supply problem). Other values occasionally appear because of data-quality
-      issues, so do not assume the vocabulary is exhaustive.
-
-    Note on the default exclusions: with `negative_filter_term` left at its default `'TCC%'`, the catalog is silently truncated to non-`TCC` articles. This is a large, non-obvious cut. Pass `negative_filter_term=None` to fetch the full article master. When the default filter is applied, the returned summary includes a `warning` field stating so. Independently, archived articles are excluded unless `include_archived=True` is passed.
+      `grün` (green - no supply problem; with umlaut, a filter on `gruen` matches nothing). Other
+      values occasionally appear because of data-quality issues (e.g. `Active`, `NRND`), so do not
+      assume the vocabulary is exhaustive.
+    - `Bestand` is the **current** on-hand quantity in the main warehouse `RM-Lager`
+      (LagerOrteID 2, summed over all charges), 0 when there is no stock row. It is a snapshot
+      at fetch time, not a historic value. Other warehouses (Muster-, Sperr-, Webshop-,
+      Strategielager) are not included.
     """
     store: ResultSetStore = ctx.fastmcp.result_store
 
@@ -80,16 +82,6 @@ async def list_artikel(
                 include_archived=include_archived
             ),
         )
-        # Rec 4: surface the silently-truncating default prominently instead of hiding it.
-        default_exclusion = negative_filter_term is not None and negative_filter_term == "TCC%"
-        if default_exclusion:
-            out = summary.model_dump() if isinstance(summary, ResultSetSummary) else dict(summary)
-            out["warning"] = (
-                "The default negative_filter_term 'TCC%' was applied: all ArtikelNummer starting "
-                "with TCC (tens of thousands of articles) are EXCLUDED from this result set. "
-                "If you intended the full article master, re-run with negative_filter_term=None."
-            )
-            return out
         return summary
     except ToolError as e:
         logger.error("ToolError in list_artikel: %s", e.message)

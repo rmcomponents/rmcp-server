@@ -118,7 +118,10 @@ Belege ──BelegeID──> BelegePositionen ──ArtikelID──> Artikel ─
   dort dauerhaft auf der Gesamtmenge.
 * **`IstLieferant` verfehlt 43 % der Lieferanten** – lieber über `BelegTyp` trennen.
 * **`Texte` bildet die realen Werte nicht zuverlässig ab** (Texte → `alphaplan://stammdaten`).
-* **`list_artikel` blendet per Default 92 % des Artikelstamms aus** (`TCC%`).
+* **92 % des Artikelstamms sind `TCC`-Neuanlagen** – `list_artikel` liefert sie per Default
+  mit. `negative_filter_term='TCC%'` nur für Gesamtkatalog-Statistiken, **nie** bei gezielten
+  Suchen (`positive_filter_term` / `match_code`) – sonst fehlen z. B. CCTC-Teile bei
+  Crossing- und Second-Source-Suchen.
 * **`Feld02` = `grün` mit Umlaut**, nicht `gruen`.
 * **Ein Artikel kann in mehreren Lagerorten liegen** – `TOP (1)` über das Abbuchungslager
   ist nicht der Gesamtbestand, und Sperr-/Webshop-/Strategielager zählen nicht in die

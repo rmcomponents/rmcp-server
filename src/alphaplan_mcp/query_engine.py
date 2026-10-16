@@ -207,6 +207,19 @@ def _build_single_filter(clause: FilterClause, schema: Dict[str, pl.DataType]) -
     if op == "is_not_null":
         return col_expr.is_not_null()
 
+    if op in _PATTERN_OPS or op in _SUBSTRING_OPS:
+        if dtype == pl.Null:
+            # entirely-null column (e.g. a result set stored before text columns were typed):
+            # treat it as an all-null string column, so no row matches instead of a crash
+            col_expr = col_expr.cast(pl.String)
+            dtype = pl.String
+        elif not _is_string_dtype(dtype):
+            raise tool_error(
+                "INVALID_ARGUMENT",
+                f"Operator '{op}' requires a string column; '{col}' has type {dtype}.",
+                {"column": col, "type": str(dtype)},
+            )
+
     value = _cast_value(clause.value, dtype)
     if value is None:
         raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a value.")
@@ -240,9 +253,9 @@ def _pattern_expr(col_expr: pl.Expr, op: str, value: Any, case_sensitive: bool, 
     """like / regex / matches_charset (and their negations)."""
     negate = op.startswith("not_")
     if op in ("like", "not_like"):
+        if not isinstance(value, str):
+            raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a string pattern.")
         return _string_like(col_expr, value, case_sensitive, negate=negate)
-    if not _is_string_dtype(dtype):
-        raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a string column.")
     if op in ("regex", "not_regex"):
         if not isinstance(value, str):
             raise tool_error("INVALID_ARGUMENT", f"Operator '{op}' requires a string pattern.")

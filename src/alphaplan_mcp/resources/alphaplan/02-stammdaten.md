@@ -36,19 +36,23 @@ wie Artikel). Ein paar tausend archiviert, ~1.000 ohne `K_VPE`, ~130 ohne Hauptl
 **ein einziger** mit gepflegtem `DatumProduktabkuendigung` – die EOL-Datumsfelder sind
 faktisch leer, `IstAuslaufArtikel` ist der einzige brauchbare EOL-Indikator.
 
-> **`list_artikel` filtert per Default `ArtikelNummer NOT LIKE 'TCC%'` und entfernt damit
-> rund 92 % des Stamms.** `TCC`-Artikel sind neu angelegte
-> Teile, die noch nicht vertrieben werden; der Default ist für Vertriebs- und
-> Beschaffungsfragen also richtig. Für Fragen zum Katalogumfang, zu Neuanlagen oder zur
-> Stammdatenqualität muss man `negative_filter_term=None` setzen – sonst betrachtet man
-> ~8 % des Bestands und hält sie für das Ganze.
+> **Rund 92 % des Stamms sind `TCC`-Artikel** – neu angelegte Teile, die noch nicht
+> vertrieben werden. `list_artikel` schließt sie per Default **nicht** aus
+> (`negative_filter_term` ist standardmäßig `None`). `negative_filter_term='TCC%'` ist nur
+> für Statistiken über den ganzen Katalog sinnvoll (sonst dominieren die Neuanlagen die
+> Zahlen). **Niemals zusammen mit gezielten Suchen** (`positive_filter_term` /
+> `match_code`) – dort fallen passende `TCC`-Artikel stillschweigend weg, etwa CCTC-Teile
+> bei Crossing- und Second-Source-Suchen.
 
-> **Die `TCC`-Zahlen oben sind Vorfilter-Zahlen.** `list_artikel` wendet zusätzlich zum
-> `TCC%`-Ausschluss immer auch `IstArchiviert = 0` an: Archivierte Artikel (ein paar
-> tausend von rund 300.000, also knapp 2 %) sind per Default **nicht** im Ergebnis.
-> Die tatsächliche Ausgabe des Tools liegt daher unter der oben genannten Zahl.
-> Beide Schnitte sind unabhängig – auch mit `negative_filter_term=None` bleiben
-> Archivierte draußen, bis man `include_archived=true` setzt.
+> **Archivierte Artikel fehlen per Default.** `list_artikel` wendet immer
+> `IstArchiviert = 0` an: Archivierte Artikel (ein paar tausend von rund 300.000, also
+> knapp 2 %) sind **nicht** im Ergebnis, bis man `include_archived=true` setzt. Die
+> tatsächliche Ausgabe des Tools liegt daher leicht unter der oben genannten Zahl.
+
+> **`list_artikel` liefert die Spalte `Bestand`:** aktueller Lagerbestand **nur** im
+> Hauptlager `RM-Lager` (LagerOrteID 2, Summe über Chargen, 0 ohne Lagerzeile) – ein
+> Momentwert zum Abrufzeitpunkt, kein historischer Bestand. Muster-, Sperr-, Webshop- und
+> strategisches Lager sind nicht enthalten (Lagerorte siehe unten).
 
 **`WarenGruppen` (314 Zeilen, schemastabil – kann sich bei Klassifikationspflege
 verschieben)** ist trotz `WarenGruppenParentID` und `Ebene` flach
@@ -86,8 +90,8 @@ Repräsentation der Verpackungseinheit neben `Artikel.K_VPE`.
 | `gelb` | ~7 |
 | Sonstiges | ~14 |
 
-Die Tool-Dokumentation von `list_artikel` nennt `rot`/`gelb`/`gruen` – real steht dort
-**`grün` mit Umlaut**, ein Filter auf `gruen` trifft nichts. `gelb` existiert praktisch
+Real steht dort **`grün` mit Umlaut**, ein Filter auf `gruen` trifft nichts
+(`list_artikel` liefert leere Werte als null). `gelb` existiert praktisch
 nicht; die englischen Werte `Active`/`NRND` bilden eine zweite, parallele
 Vokabelwelt. Unter Sonstiges stehen versehentlich eingetragene Preise
 (`0,168 USD`, `17,10 USD (Sonderpreis)`) und ein Tippfehler `NDNR`.
@@ -99,7 +103,7 @@ Kunden **und** Lieferanten in einer Tabelle.
 | Spalte | Bedeutung |
 |---|---|
 | `AdressenID` / `AdressNummer` (nvarchar 10) | PK / fachliche Nummer |
-| `SuchName` (nvarchar 33) | **der Anzeigename** – keine getrennte Namensspalte hier |
+| `SuchName` (nvarchar 33) | **der interne Such-/Anzeigename** (z. B. `Bosch - Murrhardt`); der Firmenname steht in `Anschriften.Name1`–`Name3` der Hauptanschrift (je 33 Zeichen; lange Namen laufen in `Name2`/`Name3` weiter, dort stehen aber auch Abteilung, Standort oder Notizen). `list_adressen`: `name_intern` = `SuchName`, `name` = `Name1`–`Name3` mit Leerzeichen verbunden |
 | `IstLieferant` (bit) | Kunde vs. Lieferant – **unzuverlässig**, siehe unten |
 | `KundenTyp` (255) | Finale Klassifizierung als Kurzwert: `KeyAccount`, `A`–`D`, `kein Potential`, `? (unbekannt)`, `Distributor`, `TAIYO` (die Langtexte „Finale Klassifizierung – 1 – KeyAccount" stehen nur in der Werteliste `Texte`) |
 | `K_KundenTypNeu`, `K_KundentypAlt` | Distributor / EMS-Dienstleister / Entwicklung / Fertigung / Handel / Universität … |

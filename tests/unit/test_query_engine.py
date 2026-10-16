@@ -1802,3 +1802,32 @@ class TestQueryRowsOptionalParams:
         summary = await engine.list_rows(result_id, limit=2, store_result=True, result_label="my-list-rows")
         assert isinstance(summary, ResultSetSummary)
         assert summary.result_label == "my-list-rows"
+
+
+class TestStringOperatorsOnNonStringColumns:
+    """like/regex/contains never surface as INTERNAL_ERROR."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("op,value", [
+        ("like", "TCC%"), ("not_like", "TCC%"), ("regex", "^TCC"), ("contains", "TCC"),
+        ("starts_with", "TCC"),
+    ])
+    async def test_all_null_column_matches_nothing(self, fake_redis, op, value):
+        store = ResultSetStore(fake_redis)
+        table = pa.table({"a": ["x", "y"], "n": pa.array([None, None], type=pa.null())})
+        summary = await store.store_result("s", ResultProvenance(op="t"), table)
+        engine = QueryEngine(store, "s")
+        res = await engine.count_rows(summary.result_id, filters=FilterGroup(
+            clauses=[FilterClause(column="n", operator=op, value=value)]))
+        assert res["count"] == 0
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("op", ["like", "regex", "contains"])
+    async def test_numeric_column_raises_invalid_argument(self, fake_redis, op):
+        store = ResultSetStore(fake_redis)
+        table = pa.table({"v": [1, 2]})
+        summary = await store.store_result("s", ResultProvenance(op="t"), table)
+        engine = QueryEngine(store, "s")
+        with pytest.raises(ToolError, match="INVALID_ARGUMENT"):
+            await engine.count_rows(summary.result_id, filters=FilterGroup(
+                clauses=[FilterClause(column="v", operator=op, value="1%")]))

@@ -86,7 +86,7 @@ read from `.env` in the CWD (Docker Compose feeds from `docker/.env`).
 | Tool | Source |
 |---|---|
 | `list_adressen(such_name)` | SQL Server `Adressen` (LIKE on `SuchName`) + payment/shipping terms, currency, price levels, delivery address |
-| `list_artikel(positive_filter_term, negative_filter_term="TCC%", match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) |
+| `list_artikel(positive_filter_term, negative_filter_term=None, match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) |
 | `list_artikel_statistik(artikel_nummer, jahr, einkauf_verkauf, limit)` | SQL Server `StatistikenArtikel` join |
 | `list_beleg_positionen(artikel_nummer, beleg_typ, date_from, date_to, include_archived, adress_nummer, open_only, include_text_lines)` | SQL Server `BelegePositionen`/`Belege` (+ counterparty); columns depend on the document type |
 | `get_webshop_preise(artikel_nummern, output_format)` | SQL Server `WebshopPreise` |

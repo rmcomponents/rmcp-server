@@ -23,11 +23,14 @@ async def list_adressen(
     Fetch all matching addresses (customers and suppliers - AlphaPlan keeps both in `Adressen`),
     store them as a result set, and return a summary. No rows are returned to the model.
     
-    The `such_name` parameter supports SQL LIKE wildcards:
-    - Use `%` to match any sequence of characters (e.g., `%GmbH%`).
+    The `such_name` parameter matches the internal search name `SuchName` (returned as
+    `name_intern`, e.g. 'Bosch - Murrhardt'), not the full company name (`name` = the main address's name
+    lines `Anschriften.Name1`-`Name3` joined, e.g. 'Robert Bosch GmbH'; may include a division or
+    location such as 'Siemens AG Smart Infrastructure'). It supports SQL LIKE wildcards:
+    - Use `%` to match any sequence of characters (e.g., `%Bosch%`).
     - Use `_` to match a single character.
 
-    Besides name, classification and responsible employees, each row carries the address's
+    Besides the names, classification and responsible employees, each row carries the address's
     master-data conditions (AlphaPlan customer master, tabs "Zahlung" / "Versand"):
     `zahlungsbedingung` (payment terms text), `waehrung` (currency code), `preisstufe_standard`
     and `preisstufe_vorrangig` (standard / priority price level), `versandbedingung` (shipping

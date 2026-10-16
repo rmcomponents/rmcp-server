@@ -70,8 +70,8 @@ async def test_search_mouser_parts_csv_output():
     cached_parts = [
         {
             "price_breaks": [
-                {"quantity": 1, "unit_price": 0.5},
-                {"quantity": 100, "unit_price": 0.3},
+                {"quantity": 1, "unit_price": 0.5, "currency": "EUR"},
+                {"quantity": 100, "unit_price": 0.3, "currency": "EUR"},
             ]
         }
     ]
@@ -94,7 +94,7 @@ async def test_search_mouser_parts_csv_output():
         assert csv_data.endswith("\n")
 
         lines = csv_data.strip().split("\n")
-        assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error"
+        assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,currency,updated_at,error"
         assert len(lines) == 2  # header + one row
         row = lines[1].split(",")
         assert row[0] == "ABC123"
@@ -102,8 +102,9 @@ async def test_search_mouser_parts_csv_output():
         assert row[2] == "100" # max breakpoint
         assert row[3] == "0.3" # min unit price
         assert row[4] == "0.5" # max unit price
-        assert row[5] == now.date().isoformat()  # date part of cached_at
-        assert row[6] == ""     # no error
+        assert row[5] == "EUR"  # currency from price_breaks
+        assert row[6] == now.date().isoformat()  # date part of cached_at
+        assert row[7] == ""     # no error
 
 
 @pytest.mark.asyncio
@@ -135,8 +136,8 @@ async def test_search_mouser_parts_csv_output_fresh():
         mock_extract.return_value = [
             {
                 "price_breaks": [
-                    {"quantity": 1, "unit_price": 0.5},
-                    {"quantity": 10, "unit_price": 0.4},
+                    {"quantity": 1, "unit_price": 0.5, "currency": "USD"},
+                    {"quantity": 10, "unit_price": 0.4, "currency": "USD"},
                 ]
             }
         ]
@@ -157,10 +158,11 @@ async def test_search_mouser_parts_csv_output_fresh():
         assert row[3] == "0.4"
         assert row[4] == "0.5"
         # updated_at is the date part of fetched_at
+        assert row[5] == "USD"
         from datetime import date
-        date.fromisoformat(row[5])
-        assert len(row[5]) == 10
-        assert row[6] == ""
+        date.fromisoformat(row[6])
+        assert len(row[6]) == 10
+        assert row[7] == ""
 
 
 @pytest.mark.asyncio
@@ -477,7 +479,7 @@ async def test_search_mouser_parts_csv_output_with_spaces():
         assert csv_data.endswith("\n")
 
         lines = csv_data.strip().split("\n")
-        assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,updated_at,error"
+        assert lines[0] == "MPN,breakpoint_min,breakpoint_max,unit_price_min,unit_price_max,currency,updated_at,error"
         row = lines[1].split(",")
         assert row[0] == "HK1005 10NJ-T"
 
@@ -500,8 +502,8 @@ async def test_search_mouser_parts_csv_marks_rows_without_prices(parts, expected
         result = await search_mouser_artikel(["TCC1206X7R106K6R3HT"], output_format="csv")
     row = result["csv"].strip().split("\n")[1].split(",")
     assert row[0] == "TCC1206X7R106K6R3HT"
-    assert row[1:5] == ["", "", "", ""]
-    assert row[6] == expected_error
+    assert row[1:6] == ["", "", "", "", ""]
+    assert row[7] == expected_error
 
 
 def test_extract_keeps_listed_parts_without_prices():
@@ -534,10 +536,33 @@ async def test_search_mouser_csv_reports_restriction_for_unquoted_part():
         result = await search_mouser_artikel(["RC0603FR-0710KL"], output_format="csv")
         json_result = await search_mouser_artikel(["RC0603FR-0710KL"], output_format="json")
     row = result["csv"].strip().split("\n")[1].split(",")
-    assert row[6] == "no price breaks: Not available for distributors."
+    assert row[5] == ""
+    assert row[7] == "no price breaks: Not available for distributors."
     assert json_result["results"]["RC0603FR-0710KL"]["part_count"] == 1
 
 
 def test_cache_key_is_versioned():
     from alphaplan_mcp.apis.mouser.cache import build_cache_key, CACHE_FORMAT_VERSION
     assert build_cache_key("abc") == f"alphaplan-mcp:mouser:part:{CACHE_FORMAT_VERSION}:ABC"
+
+
+@pytest.mark.asyncio
+async def test_search_mouser_csv_joins_mixed_currencies():
+    """Distinct currencies of a row are listed in first-seen order, ';'-joined."""
+    from alphaplan_mcp.apis.mouser.cache import CachedEntry
+
+    cached_parts = [
+        {"price_breaks": [{"quantity": 1, "unit_price": 0.5, "currency": "EUR"}]},
+        {"price_breaks": [
+            {"quantity": 1, "unit_price": 0.6, "currency": "USD"},
+            {"quantity": 10, "unit_price": 0.4, "currency": "EUR"},
+        ]},
+    ]
+    entry = CachedEntry(payload=cached_parts, stored_at=datetime.now(timezone.utc))
+    with patch("alphaplan_mcp.tools.mouser.default_cache") as mock_cache, \
+         patch("alphaplan_mcp.tools.mouser.search_by_part_number"):
+        mock_cache.get = AsyncMock(return_value=entry)
+        mock_cache.set = AsyncMock()
+        result = await search_mouser_artikel(["ABC123"], output_format="csv")
+    row = result["csv"].strip().split("\n")[1].split(",")
+    assert row[5] == "EUR;USD"

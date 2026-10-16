@@ -22,7 +22,7 @@ async def get_webshop_preise(
     ctx: Context = None,
 ) -> Any:
     """
-    Retrieve webshop prices for up to 25 manufacturer part numbers as CSV.
+    Retrieve webshop prices (always EUR) for up to 25 manufacturer part numbers as CSV.
 
     Parameters:
     - `artikel_nummern`: List of 1-25 exact manufacturer part numbers
@@ -32,8 +32,9 @@ async def get_webshop_preise(
     Returns a dict with:
     - `csv`: a CSV string with columns:
       MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
-      (`updated_at` = date the most recently refreshed price row of that MPN was last updated,
-      'YYYY-MM-DD'; empty when unknown)
+      (all prices are in **EUR** - the webshop table has no currency column, so there is no
+      `currency` column; `updated_at` = date the most recently refreshed price row of that MPN
+      was last updated, 'YYYY-MM-DD'; empty when unknown)
     - `sha256_base64`: Base64(SHA-256(exact UTF-8 bytes of the preceding CSV)),
       excluding the checksum line. Preserve LF line endings and the final newline
       exactly. Verify before using the data.

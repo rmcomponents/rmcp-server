@@ -21,7 +21,11 @@ _CUSTOMER_QUERY = """
     SELECT
         NULLIF(LTRIM(RTRIM(A.AdressNummer)), '') AS adress_nummer,
         NULLIF(LTRIM(RTRIM(A.SuchName)), '') AS name_intern,
-        NULLIF(LTRIM(RTRIM(A.SuchName)), '') AS name,
+        NULLIF(CONCAT_WS(' ',
+            NULLIF(LTRIM(RTRIM(HA.Name1)), ''),
+            NULLIF(LTRIM(RTRIM(HA.Name2)), ''),
+            NULLIF(LTRIM(RTRIM(HA.Name3)), '')
+        ), '') AS name,
         NULLIF(LTRIM(RTRIM(A.Branche)), '') AS branche,
         NULLIF(LTRIM(RTRIM(A.K_KundenTypNeu)), '') AS kunden_typ,
         NULLIF(LTRIM(RTRIM(A.KundenTyp)), '') AS finale_klassifizierung,
@@ -41,6 +45,8 @@ _CUSTOMER_QUERY = """
         COALESCE(LA.lieferadressen_anzahl, 0) AS lieferadressen_anzahl
     FROM
         ALPHAPLAN_EchtDaten.dbo.Adressen A
+        LEFT JOIN ALPHAPLAN_EchtDaten.dbo.Anschriften HA
+            ON HA.AnschriftenID = A.AnschriftenID
         LEFT JOIN ALPHAPLAN_EchtDaten.dbo.ZahlungsBedingungen ZB
             ON ZB.ZahlungsBedingungenID = A.ZahlungsBedingungenID
         LEFT JOIN ALPHAPLAN_EchtDaten.dbo.Waehrungen W
@@ -80,8 +86,8 @@ _CUSTOMER_QUERY = """
 
 _CUSTOMER_COLUMN_DESCRIPTIONS = {
     "adress_nummer": "Address number (AdressNummer) of the customer or supplier, e.g. 'D010187'; the adress_nummer parameter of list_beleg_positionen.",
-    "name_intern": "Internal search name of the customer or supplier (SuchName).",
-    "name": "Name of the customer or supplier (SuchName).",
+    "name_intern": "Internal search/display name of the customer or supplier (SuchName), e.g. 'Bosch - Murrhardt'; the such_name parameter of list_adressen matches this.",
+    "name": "Full addressee name from the main address: Anschriften.Name1, Name2 and Name3 (33 characters each) trimmed and joined with a space, empty lines skipped, e.g. 'Robert Bosch GmbH', 'Compleo Charging Solutions GmbH & Co. KG'. Name2/Name3 continue a long company name or hold a division, location or note ('Siemens AG Smart Infrastructure'); a word split with a hyphen keeps the space ('Mikro- integration'). A few names are cut off in the source itself. Null when all three lines are empty.",
     "branche": "Industry sector of the customer or supplier (Branche), e.g. Automotive, Medical, Industrial.",
     "kunden_typ": "Customer type(s) (K_KundenTypNeu), comma-separated, e.g. 'Entwicklung, Fertigung', 'EMS-Dienstleister', 'Distributor', 'Handel'.",
     "finale_klassifizierung": "Final customer classification (KundenTyp), stored as short value: 'KeyAccount', 'A', 'B', 'C', 'D', 'kein Potential', '? (unbekannt)', 'Distributor', 'TAIYO'. (The long labels like 'Finale Klassifizierung - 1 - KeyAccount' exist only in AlphaPlan's value list.)",
@@ -106,13 +112,14 @@ _PART_COLUMN_DESCRIPTIONS = {
     "RollengroesseZoll": "Roll size in inches.",
     "Beschreibung": "Combined description (short text + long text).",
     "MatchCode": "Search match code for the part.",
-    "Status": "Supplier ability-to-supply indicator (Feld02). Mostly 'rot' (red = cannot supply), 'gelb' (yellow = limited), or 'gruen' (green = no problem). Other values are possible due to data-quality issues.",
+    "Status": "Supplier ability-to-supply indicator (Feld02). Mostly 'rot' (red = cannot supply), 'gelb' (yellow = limited), or 'grün' (green = no problem, with umlaut). Other values are possible due to data-quality issues.",
     "VPE": "Sales unit (Verpackungseinheit).",
     "HauptLieferant": "Main supplier name.",
     "NachfolgeArtikel": "Successor article number (Feld03).",
     "Wiederbeschaffungszeit_Tage": "Replenishment time in days.",
     "WarenGruppe": "Product group description.",
-    "WarenGruppenNummer": "Product group number."
+    "WarenGruppenNummer": "Product group number.",
+    "Bestand": "Current on-hand quantity in the main warehouse RM-Lager (LagerOrteID 2, summed over all charges; 0 without a stock row). Current value at fetch time, not historic.",
 }
 
 _PART_STATS_COLUMN_DESCRIPTIONS = {
@@ -128,7 +135,7 @@ _PART_STATS_COLUMN_DESCRIPTIONS = {
 _WEBSHOP_PRICE_COLUMN_DESCRIPTIONS = {
     "mpn": "Manufacturer part number.",
     "quantity_breakpoint": "Minimum quantity for this price tier.",
-    "unit_price": "Unit price at the given quantity breakpoint.",
+    "unit_price": "Unit price in EUR at the given quantity breakpoint.",
     "updated_at": "Timestamp when this price was last updated.",
 }
 
@@ -464,6 +471,23 @@ def _arrow_schema(
     return pa.schema(fields)
 
 
+def _rows_to_batch(
+    dicts: List[Dict[str, Any]],
+    schema: Optional[pa.Schema],
+    descriptions: Mapping[str, str],
+) -> pa.RecordBatch:
+    """Record batch on the declared schema (an all-null text column stays a string); falls
+    back to inferred types plus description metadata when the schema is unknown."""
+    if schema is not None:
+        return pa.RecordBatch.from_pylist(dicts, schema=schema)
+    batch = pa.RecordBatch.from_pylist(dicts)
+    new_fields = []
+    for field in batch.schema:
+        desc = descriptions.get(field.name)
+        new_fields.append(field.with_metadata({**(field.metadata or {}), b"description": desc.encode("utf-8")}) if desc else field)
+    return pa.RecordBatch.from_arrays(batch.columns, schema=pa.schema(new_fields))
+
+
 def build_connection() -> pyodbc.Connection:
     """Create a new pyodbc connection using application settings."""
     conn_str = (
@@ -772,26 +796,14 @@ async def fetch_part_stats_stream(
             cursor.execute(query, params)
 
             columns = [col[0] for col in cursor.description]
+            schema = _arrow_schema(cursor.description, _PART_STATS_COLUMN_DESCRIPTIONS)
             rows_fetched = 0
             while True:
                 rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
                 if not rows:
                     break
                 dicts = [dict(zip(columns, row)) for row in rows]
-                batch = pa.RecordBatch.from_pylist(dicts)
-                # Attach column descriptions to the schema metadata
-                new_fields = []
-                for field in batch.schema:
-                    desc = _PART_STATS_COLUMN_DESCRIPTIONS.get(field.name)
-                    if desc:
-                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
-                        new_fields.append(field.with_metadata(metadata))
-                    else:
-                        new_fields.append(field)
-                new_schema = pa.schema(new_fields)
-                cols = [batch.column(i) for i in range(batch.num_columns)]
-                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
-                queue.put_nowait(batch)
+                queue.put_nowait(_rows_to_batch(dicts, schema, _PART_STATS_COLUMN_DESCRIPTIONS))
                 
                 if limit is not None:
                     rows_fetched += len(rows)
@@ -819,9 +831,13 @@ async def fetch_part_stats_stream(
     await task
 
 
+# LagerOrt counted for list_artikel's `Bestand`: only the main warehouse RM-Lager.
+_STOCK_LAGER_ORTE_ID = 2
+
+
 async def fetch_parts_stream(
     positive_filter_term: Optional[str] = None,
-    negative_filter_term: Optional[str] = "TCC%",
+    negative_filter_term: Optional[str] = None,
     match_code: Optional[str] = None,
     sample_n: Optional[int] = None,
     include_archived: Optional[bool] = False,
@@ -848,22 +864,28 @@ async def fetch_parts_stream(
             conn = build_connection()
             cursor = conn.cursor()
             
-            columns_sql = """
+            columns_sql = f"""
                 SELECT 
-                    A.ArtikelNummer, 
-                    A.Groesse AS RollengroesseZoll,
-                    A.Bezeichnung + ' ' + A.LangText AS Beschreibung,
-                    A.MatchCode AS MatchCode,
-                    A.Feld02 AS [Status],
+                    NULLIF(LTRIM(RTRIM(A.ArtikelNummer)), '') AS ArtikelNummer,
+                    NULLIF(LTRIM(RTRIM(A.Groesse)), '') AS RollengroesseZoll,
+                    NULLIF(LTRIM(RTRIM(CONCAT(LTRIM(RTRIM(A.Bezeichnung)), ' ', LTRIM(RTRIM(A.LangText))))), '') AS Beschreibung,
+                    NULLIF(LTRIM(RTRIM(A.MatchCode)), '') AS MatchCode,
+                    NULLIF(LTRIM(RTRIM(A.Feld02)), '') AS [Status],
                     A.K_VPE AS VPE,
-                    L.SuchName AS HauptLieferant,
-                    A.Feld03 AS NachfolgeArtikel,
+                    NULLIF(LTRIM(RTRIM(L.SuchName)), '') AS HauptLieferant,
+                    NULLIF(LTRIM(RTRIM(A.Feld03)), '') AS NachfolgeArtikel,
                     A.Wiederbeschaffungszeit AS Wiederbeschaffungszeit_Tage,
-                    WG.Bezeichnung AS WarenGruppe,
-                    WG.WarenGruppenNummer AS WarenGruppenNummer
+                    NULLIF(LTRIM(RTRIM(WG.Bezeichnung)), '') AS WarenGruppe,
+                    NULLIF(LTRIM(RTRIM(WG.WarenGruppenNummer)), '') AS WarenGruppenNummer,
+                    COALESCE(LB.Bestand, 0) AS Bestand
                 FROM ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK)
                 JOIN ALPHAPLAN_EchtDaten.dbo.Adressen L WITH (NOLOCK) ON L.AdressenID = A.HauptLieferantenAdressenID
                 JOIN ALPHAPLAN_EchtDaten.dbo.WarenGruppen WG WITH (NOLOCK) ON WG.WarenGruppenID = A.WarenGruppenID
+                OUTER APPLY (
+                    SELECT SUM(LG.Bestand) AS Bestand
+                    FROM ALPHAPLAN_EchtDaten.dbo.Lager LG WITH (NOLOCK)
+                    WHERE LG.ArtikelID = A.ArtikelID AND LG.LagerOrteID = {_STOCK_LAGER_ORTE_ID}
+                ) LB
             """
 
             # Build the WHERE clauses (equivalent to `inner_where` below). We do not use
@@ -899,25 +921,18 @@ async def fetch_parts_stream(
             cursor.execute(query, params)
 
             columns = [col[0] for col in cursor.description]
+            schema = _arrow_schema(cursor.description, _PART_COLUMN_DESCRIPTIONS)
+            fetched_any = False
             while True:
                 rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
                 if not rows:
+                    if not fetched_any and schema is not None:
+                        # no matches: an empty batch keeps the columns of the stored result set
+                        queue.put_nowait(pa.RecordBatch.from_pylist([], schema=schema))
                     break
+                fetched_any = True
                 dicts = [dict(zip(columns, row)) for row in rows]
-                batch = pa.RecordBatch.from_pylist(dicts)
-                # Attach column descriptions to the schema metadata
-                new_fields = []
-                for field in batch.schema:
-                    desc = _PART_COLUMN_DESCRIPTIONS.get(field.name)
-                    if desc:
-                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
-                        new_fields.append(field.with_metadata(metadata))
-                    else:
-                        new_fields.append(field)
-                new_schema = pa.schema(new_fields)
-                cols = [batch.column(i) for i in range(batch.num_columns)]
-                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
-                queue.put_nowait(batch)
+                queue.put_nowait(_rows_to_batch(dicts, schema, _PART_COLUMN_DESCRIPTIONS))
         except Exception as e:
             logger.exception("Error fetching parts")
             queue.put_nowait(None)  # signal error

@@ -75,8 +75,11 @@ async def search_mouser_artikel(
 
     If output_format is "csv", returns a dict with keys:
     - `csv`: the CSV string with columns:
-      MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, updated_at, error
-      (`updated_at` = date of the cached or fresh Mouser data, 'YYYY-MM-DD'; `error` is the
+      MPN, breakpoint_min, breakpoint_max, unit_price_min, unit_price_max, currency, updated_at, error
+      (`currency` = the ISO currency code of the row's price breaks, taken from
+      `price_breaks[].currency`, e.g. 'EUR'; several codes are joined with ';' (then
+      min/max mix currencies); empty when there are no price breaks; `updated_at` = date of
+      the cached or fresh Mouser data, 'YYYY-MM-DD'; `error` is the
       lookup error; 'no parts found' when Mouser does not list the MPN; 'no price breaks'
       (plus Mouser's restriction text, e.g. 'not available for purchase by distributors')
       when Mouser lists the part but does not quote it)
@@ -106,17 +109,18 @@ async def search_mouser_artikel(
             writer = csv.writer(output, lineterminator="\n")
             writer.writerow([
                 "MPN", "breakpoint_min", "breakpoint_max",
-                "unit_price_min", "unit_price_max", "updated_at", "error",
+                "unit_price_min", "unit_price_max", "currency", "updated_at", "error",
             ])
 
             for mpn, result in results.items():
                 if "error" in result:
-                    writer.writerow([mpn, "", "", "", "", "", result.get("message", "")])
+                    writer.writerow([mpn, "", "", "", "", "", "", result.get("message", "")])
                     continue
 
                 parts = result.get("parts") or []
                 quantity_breaks = []
                 unit_prices = []
+                currencies: list[str] = []
 
                 for part in parts:
                     for price_break in part.get("price_breaks") or []:
@@ -126,6 +130,9 @@ async def search_mouser_artikel(
                             quantity_breaks.append(q)
                         if p is not None:
                             unit_prices.append(p)
+                        c = price_break.get("currency")
+                        if c and c not in currencies:
+                            currencies.append(c)
 
                 metadata = result.get("metadata") or {}
                 if metadata.get("source") == "cache":
@@ -146,6 +153,7 @@ async def search_mouser_artikel(
                     max(quantity_breaks) if quantity_breaks else "",
                     min(unit_prices) if unit_prices else "",
                     max(unit_prices) if unit_prices else "",
+                    ";".join(currencies),
                     updated_at,
                     row_error,
                 ])
