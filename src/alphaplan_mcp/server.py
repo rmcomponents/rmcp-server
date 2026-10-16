@@ -18,8 +18,8 @@ from .tools import (
     documents,
     mouser as mouser_tool,
     parts,
+    prices,
     result_sets,
-    webshop,
 )
 
 logger = logging.getLogger(__name__)
@@ -84,7 +84,7 @@ mcp.tool()(mouser_tool.search_mouser_artikel)
 mcp.tool()(parts.list_artikel)
 mcp.tool()(parts.list_artikel_statistik)
 mcp.tool()(documents.list_beleg_positionen)
-mcp.tool()(webshop.get_webshop_preise)
+mcp.tool()(prices.get_verkaufspreise)
 
 mcp.tool()(result_sets.get_result_info)
 mcp.tool()(result_sets.explain_columns)

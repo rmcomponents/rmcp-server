@@ -28,12 +28,17 @@ class Settings(BaseSettings):
     TOOL_MAX_AGGREGATIONS: int = 10
 
     SQLSERVER_HOST: str = ""
-    SQLSERVER_DATABASE: str = "ApiPreise"
+    SQLSERVER_DATABASE: str = "ALPHAPLAN_EchtDaten"
     SQLSERVER_USER: str = ""
     SQLSERVER_PASSWORD: str = ""
     SQLSERVER_DRIVER: str = "ODBC Driver 18 for SQL Server"
     SQLSERVER_TRUST_CERTIFICATE: str = "yes"
     SQLSERVER_QUERY_TIMEOUT_SECONDS: int = 120
+
+    # Price lists behind the get_verkaufspreise sentinels (AlphaPlan AdressNummer). Keep in
+    # sync with the price-sync agent; never put these values into tool descriptions.
+    VERKAUFSPREISE_WEBSHOP_ADRESS_NUMMER: str = "DIV1067"
+    VERKAUFSPREISE_LUMINOVO_ADRESS_NUMMER: str = "DIV1066"
 
     MOUSER_API_KEY: str = ""
     MOUSER_API_BASE_URL: str = "https://api.mouser.com/api/v1"

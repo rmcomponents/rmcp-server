@@ -14,7 +14,7 @@ paginate, aggregate, join, histogram) that run on demand.
 
 ## Features
 
-- **Streaming ingestion** from SQL Server (customers, parts, part stats, webshop prices)
+- **Streaming ingestion** from SQL Server (customers, parts, part stats, sales prices)
   and the Mouser part-search API, persisted as chunked, LZ4-compressed Arrow IPC in Redis.
 - **18 MCP tools** — 5 ingestion + 13 generic result-set tools (incl. `join`).
 - **Typed, provenance-aware result sets** — derived sets (from `store_result`) carry
@@ -72,7 +72,7 @@ read from `.env` in the CWD (Docker Compose feeds from `docker/.env`).
 | `TOOL_MAX_FILTER_CLAUSES` | `20` | Cap for `FilterGroup.clauses` |
 | `TOOL_MAX_GROUP_COLUMNS` | `3` | Cap for `group_by` columns |
 | `TOOL_MAX_AGGREGATIONS` | `10` | Cap for aggregation list |
-| `SQLSERVER_HOST` / `_DATABASE` (`ApiPreise`) / `_USER` / `_PASSWORD` / `_DRIVER` (`ODBC Driver 18 for SQL Server`) / `_TRUST_CERTIFICATE` (`yes`) / `_QUERY_TIMEOUT_SECONDS` (`120`) | — | SQL Server connectivity (ReadOnly, `Encrypt=yes`, autocommit) |
+| `SQLSERVER_HOST` / `_DATABASE` (`ALPHAPLAN_EchtDaten`) / `_USER` / `_PASSWORD` / `_DRIVER` (`ODBC Driver 18 for SQL Server`) / `_TRUST_CERTIFICATE` (`yes`) / `_QUERY_TIMEOUT_SECONDS` (`120`) | — | SQL Server connectivity (ReadOnly, `Encrypt=yes`, autocommit) |
 | `MOUSER_API_KEY` | — | Mouser API key (required for `search_mouser_artikel`) |
 | `MOUSER_API_BASE_URL` | `https://api.mouser.com/api/v1` | Mouser endpoint |
 | `MOUSER_TIMEOUT_SECONDS` | `15.0` | httpx timeout |
@@ -89,7 +89,7 @@ read from `.env` in the CWD (Docker Compose feeds from `docker/.env`).
 | `list_artikel(positive_filter_term, negative_filter_term=None, match_code, sample_n, include_archived)` | SQL Server `Artikel` (+ supplier + warehouses) |
 | `list_artikel_statistik(artikel_nummer, jahr, einkauf_verkauf, limit)` | SQL Server `StatistikenArtikel` join |
 | `list_beleg_positionen(artikel_nummer, beleg_typ, date_from, date_to, include_archived, adress_nummer, open_only, include_text_lines)` | SQL Server `BelegePositionen`/`Belege` (+ counterparty); columns depend on the document type |
-| `get_webshop_preise(artikel_nummern, output_format)` | SQL Server `WebshopPreise` |
+| `get_verkaufspreise(artikel_nummern, adress_nummer, output_format)` | AlphaPlan `VerkaufsPreise` (customer price list, or `SENTINEL_WEBSHOP` / `SENTINEL_LUMINOVO`) |
 | `search_mouser_artikel(artikel_nummern, caching, cache_ttl_override_hours, output_format, retry_on_rate_limit)` | Mouser API, Redis-cached |
 
 ### Generic result-set tools (all require a `result_id`)
@@ -160,7 +160,7 @@ filtered/aggregated rows or a new derived result set
 │       ├── __main__.py / server.py / config.py / database.py
 │       ├── result_store.py / serialization.py / query_engine.py
 │       ├── models.py / errors.py / utils.py
-│       ├── tools/  (customers, parts, webshop, mouser, result_sets)
+│       ├── tools/  (customers, parts, prices, mouser, result_sets)
 │       └── apis/mouser/  (api, cache, parts_extraction)
 ├── tests/ (unit/ + integration/)
 ├── docker/ (Dockerfile, docker-compose.yml, redis.conf)

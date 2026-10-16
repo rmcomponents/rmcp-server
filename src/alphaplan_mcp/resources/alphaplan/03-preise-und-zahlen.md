@@ -34,12 +34,21 @@ Lieferanten-Preisliste mit Mengenstaffeln.
 | Spalte | Bedeutung |
 |---|---|
 | `ArtikelID` + `AdressenID` / `AdressgruppenID` / `AdressPreisGruppenID` / `ProjekteID` | Geltungsbereich – vier konkurrierende Zuordnungen |
-| `Anzahl` | Staffelmenge |
+| `Anzahl` | Staffelmenge in Tausend (`AnzahlBEs / 1000`) |
+| `AnzahlBEs` | Staffelmenge in Stück – die Preisstaffel-Grenze |
 | `PreisStufe` | `01` / `02` (siehe `Texte`) |
-| `Netto`, `Brutto` | Preis |
+| `Netto`, `Brutto` | Preis **pro 1000 Stück** (Stückpreis = `Netto / 1000`) |
 | `HandelsSpanne`, `Aufschlag`, `Rohertrag`, `RohertragW` | Kalkulation |
 | `GueltigVon` / `GueltigBis`, `Prioritaet`, `IgnoriereRest` | Auswahlsteuerung |
 | `WaehrungenID`, `KursFaktor`, `KursDivisor` | eigene Währungsangabe je Preiszeile |
+| `PreisGeaendertAm` | letzte Preisänderung |
+
+> **Gültigkeit:** `1900-01-01` in `GueltigVon`/`GueltigBis` heißt „offen". Kundenpreislisten
+> behalten abgelaufene Preise als Historie (mehrere Zeilen je Artikel, je ein
+> Gültigkeitszeitraum) – für aktuelle Preise immer auf heute einschränken.
+> **Webshop- und Plattformpreise** stehen hier als Preisliste je einer eigenen Adresse.
+> `get_verkaufspreise` liest sie über `SENTINEL_WEBSHOP` / `SENTINEL_LUMINOVO`, jede andere
+> `AdressNummer` liefert deren Kundenpreise (nur heute gültige).
 
 ### `AdressSpezArtikelDaten` (rund 330.000)
 

@@ -10,7 +10,7 @@ EXPECTED = {
     "list_artikel": ["positive_filter_term", "negative_filter_term", "match_code", "sample_n",
                      "include_archived"],
     "list_artikel_statistik": ["artikel_nummer", "jahr", "einkauf_verkauf", "limit"],
-    "get_webshop_preise": ["artikel_nummern", "output_format"],
+    "get_verkaufspreise": ["artikel_nummern", "adress_nummer", "output_format"],
     "search_mouser_artikel": ["artikel_nummern", "caching", "cache_ttl_override_hours", "output_format",
                               "retry_on_rate_limit"],
     "list_documentation": [],
@@ -37,7 +37,7 @@ async def test_domain_tool_names_and_parameters():
 async def test_old_tool_names_are_gone():
     tools = await _tools()
     for old in ("list_line_items", "list_customers", "list_parts", "list_part_stats",
-                "get_webshop_prices", "search_mouser_parts", "list_documents", "read_document",
+                "get_webshop_prices", "get_webshop_preise", "search_mouser_parts", "list_documents", "read_document",
                 "search_documents"):
         assert old not in tools, old
 

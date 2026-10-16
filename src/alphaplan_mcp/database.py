@@ -132,13 +132,6 @@ _PART_STATS_COLUMN_DESCRIPTIONS = {
     "Menge": "Quantity (BEEanzahl)."
 }
 
-_WEBSHOP_PRICE_COLUMN_DESCRIPTIONS = {
-    "mpn": "Manufacturer part number.",
-    "quantity_breakpoint": "Minimum quantity for this price tier.",
-    "unit_price": "Unit price in EUR at the given quantity breakpoint.",
-    "updated_at": "Timestamp when this price was last updated.",
-}
-
 @dataclass(frozen=True)
 class LineItemColumn:
     """One output column of `list_beleg_positionen`.
@@ -581,72 +574,59 @@ async def fetch_customers_stream(
     await task  # propagate any exception
 
 
-async def fetch_webshop_prices_stream(
-    mpns: List[str],
-) -> AsyncGenerator[pa.RecordBatch, None]:
+def fetch_sales_prices(adress_nummer: str, mpns: List[str]) -> Optional[List[Dict[str, Any]]]:
+    """Sales-price rows (`VerkaufsPreise`) of one address's price list for the given MPNs.
+
+    Only prices linked to this address (`VP.AdressenID`); price-level rows (`PreisStufe`,
+    no address) are never included. Returns None when no address with this `AdressNummer`
+    exists. Only rows valid today
+    (`GueltigVon`/`GueltigBis`) are returned; rows with `Netto <= 0` or without a currency are
+    excluded; `Netto` is per 1000 pieces. Blocking - call it via
+    `asyncio.to_thread`.
     """
-    Asynchronously yield webshop price rows for multiple MPNs as Arrow record batches.
-    """
-    import asyncio
-    from asyncio import Queue
-
-    queue: Queue[Optional[pa.RecordBatch]] = asyncio.Queue()
-
-    def _fetch():
-        conn = None
-        cursor = None
-        try:
-            conn = build_connection()
-            cursor = conn.cursor()
-            placeholders = ",".join("?" for _ in mpns)
-            query = f"""
-                SELECT mpn, quantity_breakpoint, unit_price, updated_at
-                FROM [ApiPreise].[dbo].[WebshopPreise]
-                WHERE mpn IN ({placeholders})
-                ORDER BY mpn, quantity_breakpoint ASC
-            """
-            cursor.execute(query, mpns)
-
-            columns = [col[0] for col in cursor.description]
-            while True:
-                rows = cursor.fetchmany(settings.RESULTSET_CHUNK_ROWS)
-                if not rows:
-                    break
-                dicts = [dict(zip(columns, row)) for row in rows]
-                batch = pa.RecordBatch.from_pylist(dicts)
-                # Attach column descriptions
-                new_fields = []
-                for field in batch.schema:
-                    desc = _WEBSHOP_PRICE_COLUMN_DESCRIPTIONS.get(field.name)
-                    if desc:
-                        metadata = {**field.metadata, b"description": desc.encode("utf-8")} if field.metadata else {b"description": desc.encode("utf-8")}
-                        new_fields.append(field.with_metadata(metadata))
-                    else:
-                        new_fields.append(field)
-                new_schema = pa.schema(new_fields)
-                cols = [batch.column(i) for i in range(batch.num_columns)]
-                batch = pa.RecordBatch.from_arrays(cols, schema=new_schema)
-                queue.put_nowait(batch)
-        except Exception:
-            logger.exception("Error fetching webshop prices")
-            queue.put_nowait(None)
-            raise
-        finally:
-            if cursor:
-                cursor.close()
-            if conn:
-                conn.close()
-        queue.put_nowait(None)
-
-    loop = asyncio.get_running_loop()
-    task = loop.run_in_executor(None, _fetch)
-
-    while True:
-        batch = await queue.get()
-        if batch is None:
-            break
-        yield batch
-    await task
+    conn = None
+    cursor = None
+    try:
+        conn = build_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT AdressenID FROM ALPHAPLAN_EchtDaten.dbo.Adressen WITH (NOLOCK) "
+            "WHERE AdressNummer = ? AND AdressenID > 0",
+            [adress_nummer],
+        )
+        found = cursor.fetchone()
+        if found is None:
+            return None
+        placeholders = ",".join("?" for _ in mpns)
+        cursor.execute(
+            f"""
+            SELECT
+                A.ArtikelNummer AS mpn,
+                A.K_VPE AS vpe,
+                VP.AnzahlBEs AS anzahl_bes,
+                VP.Netto AS netto_pro_1000,
+                W.WaehrungsKuerzel AS currency,
+                VP.PreisGeaendertAm AS updated_at,
+                VP.GueltigVon AS valid_from
+            FROM ALPHAPLAN_EchtDaten.dbo.VerkaufsPreise VP WITH (NOLOCK)
+                JOIN ALPHAPLAN_EchtDaten.dbo.Artikel A WITH (NOLOCK) ON A.ArtikelID = VP.ArtikelID
+                JOIN ALPHAPLAN_EchtDaten.dbo.Waehrungen W WITH (NOLOCK) ON W.WaehrungenID = VP.WaehrungenID
+            WHERE VP.AdressenID = ? AND VP.Netto > 0 AND A.ArtikelNummer IN ({placeholders})
+                -- only prices valid today; 1900-01-01 is AlphaPlan's "open-ended" placeholder
+                AND (VP.GueltigVon < '19010101' OR VP.GueltigVon <= GETDATE())
+                AND (VP.GueltigBis < '19010101' OR VP.GueltigBis >= CAST(GETDATE() AS date))
+            ORDER BY A.ArtikelNummer, CASE WHEN VP.AnzahlBEs < 1 THEN 1 ELSE VP.AnzahlBEs END,
+                VP.GueltigVon DESC, VP.PreisGeaendertAm DESC
+            """,
+            [found[0], *mpns],
+        )
+        columns = [col[0] for col in cursor.description]
+        return [dict(zip(columns, row)) for row in cursor.fetchall()]
+    finally:
+        if cursor:
+            cursor.close()
+        if conn:
+            conn.close()
 
 
 async def fetch_line_items_stream(
